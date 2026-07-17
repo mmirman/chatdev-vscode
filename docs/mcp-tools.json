@@ -1,0 +1,288 @@
+{
+  "tools": [
+    {
+      "name": "chatdev_list_agents",
+      "description": "List chat.dev agents that can be opened as editor workspaces.",
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "chatdev_list_machine_tiers",
+      "description": "List current chat.dev machine specs, included disk, and monthly prices.",
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "chatdev_get_agent",
+      "description": "Read one chat.dev agent and its current status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string" } },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_create_agent",
+      "description": "Create a chat.dev coding agent for a remote workspace handoff.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "runtime": { "enum": ["codex-tmux", "claude-code-tmux", "cursor-agent-tmux"] },
+          "machineSize": { "type": "string" },
+          "volumeGb": { "type": "integer", "minimum": 1 },
+          "model": { "type": "string" }
+        },
+        "required": ["name", "runtime", "machineSize"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_start_agent",
+      "description": "Start a stopped chat.dev agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string" } },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_delete_agent",
+      "description": "Delete a chat.dev agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string" } },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_list_sessions",
+      "description": "List the named coding sessions running in one shared agent workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string" } },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_create_session",
+      "description": "Create and optionally start a coding session or a branch of an existing session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "name": { "type": "string" },
+          "parentSessionId": { "type": ["string", "null"] },
+          "runtime": { "enum": ["codex-tmux", "openclaw-tmux", "claude-code-tmux", "cursor-agent-tmux", "opencode-tmux", "gemini-code-tmux", "poolside-tmux"] },
+          "model": { "type": ["string", "null"] },
+          "start": { "type": "boolean", "default": true }
+        },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_update_session",
+      "description": "Change one coding session's name, harness, or model.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "name": { "type": "string" },
+          "runtime": { "enum": ["codex-tmux", "openclaw-tmux", "claude-code-tmux", "cursor-agent-tmux", "opencode-tmux", "gemini-code-tmux", "poolside-tmux"] },
+          "model": { "type": ["string", "null"] }
+        },
+        "required": ["agentId", "sessionId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_manage_session",
+      "description": "Resume, end, restart, or delete one non-Main coding session. Machine lifecycle is managed with the agent tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "action": { "enum": ["resume", "end", "restart", "delete"] }
+        },
+        "required": ["agentId", "sessionId", "action"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_branch_from_message",
+      "description": "Replace one user message in a new child branch while leaving the parent history unchanged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "messageId": { "type": "integer", "minimum": 1 },
+          "content": { "type": "string" },
+          "name": { "type": "string" },
+          "start": { "type": "boolean", "default": true }
+        },
+        "required": ["agentId", "sessionId", "messageId", "content"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_get_session_messages",
+      "description": "Read exact ordered user and agent messages from one session. Omit the session selector to read Main.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "sessionName": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+          "beforeId": { "type": "integer" }
+        },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_send_session_message",
+      "description": "Send a prompt to one coding session and its harness. Omit the session selector to send to Main.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "sessionName": { "type": "string" },
+          "message": { "type": "string" },
+          "clientMessageId": { "type": "string", "minLength": 8, "maxLength": 100 }
+        },
+        "required": ["agentId", "message"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_list_files",
+      "description": "List a directory in an agent workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string" }, "path": { "type": "string" } },
+        "required": ["agentId", "path"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_read_file",
+      "description": "Read a file from an agent workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string" }, "path": { "type": "string" } },
+        "required": ["agentId", "path"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_write_file",
+      "description": "Create or replace a file in an agent workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "path": { "type": "string" },
+          "content": { "type": "string" },
+          "encoding": { "enum": ["utf8", "base64"], "default": "utf8" }
+        },
+        "required": ["agentId", "path", "content"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_import_session",
+      "description": "Import resumable Codex or Claude Code state, or attach a Cursor editor transcript to a remote session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "targetSessionId": { "type": "string" },
+          "runtime": { "type": "string" },
+          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "sourceSessionId": { "type": "string" },
+          "localCwd": { "type": "string" },
+          "dataBase64": { "type": "string" }
+        },
+        "required": ["agentId", "targetSessionId", "runtime", "provider", "sourceSessionId", "localCwd"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_import_chat_messages",
+      "description": "Import exact parsed user and assistant transcript rows into one session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "remoteSessionId": { "type": "string" },
+          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "sourceSessionId": { "type": "string" },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": { "enum": ["user", "assistant"] },
+                "content": { "type": "string" },
+                "createdAt": { "type": ["string", "null"] }
+              },
+              "required": ["role", "content"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["agentId", "remoteSessionId", "provider", "sourceSessionId", "messages"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_save_account_credentials",
+      "description": "Save provider values for compatible agents on the chat.dev account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "values": { "type": "object", "additionalProperties": { "type": "string" } }
+        },
+        "required": ["provider", "values"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_install_agent_credentials",
+      "description": "Install provider values on one destination agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "values": { "type": "object", "additionalProperties": { "type": "string" } }
+        },
+        "required": ["agentId", "provider", "values"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "chatdev_open_shell",
+      "description": "Open a shell on an agent machine.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "columns": { "type": "integer", "default": 120 },
+          "rows": { "type": "integer", "default": 30 }
+        },
+        "required": ["agentId"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

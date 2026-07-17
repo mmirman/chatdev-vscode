@@ -1,0 +1,1017 @@
+openapi: 3.1.0
+info:
+  title: chat.dev Editor API
+  version: 0.4.0-preproduction
+  description: REST calls required by the chat.dev Remote Agents extension.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://api.chat.dev
+paths:
+  /api/auth/login-options:
+    post:
+      summary: Choose password or verification-code login before sending a code
+      operationId: getLoginOptions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string }
+      responses:
+        "200":
+          description: Login method information
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hasPassword, method]
+                properties:
+                  hasPassword: { type: boolean }
+                  method: { enum: [email, sms] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/auth/extension/device:
+    post:
+      summary: Start editor sign-in
+      operationId: createEditorDeviceCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [codeChallenge, clientName]
+              properties:
+                codeChallenge: { type: string }
+                clientName: { type: string }
+      responses:
+        "201":
+          description: Browser sign-in request created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceAuthorization" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/auth/extension/approve:
+    post:
+      summary: Approve a waiting editor for the signed-in browser user
+      operationId: approveEditorDeviceCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userCode]
+              properties:
+                userCode: { type: string }
+      responses:
+        "200":
+          description: Editor sign-in approved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, clientName]
+                properties:
+                  ok: { type: boolean, const: true }
+                  clientName: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/auth/extension/token:
+    post:
+      summary: Poll for the editor access token
+      operationId: exchangeEditorDeviceCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceCode, codeVerifier]
+              properties:
+                deviceCode: { type: string }
+                codeVerifier: { type: string }
+      responses:
+        "200":
+          description: Browser sign-in completed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accessToken]
+                properties:
+                  accessToken: { type: string }
+        "428":
+          description: Browser sign-in is still pending
+    delete:
+      summary: End the current editor session
+      operationId: deleteCurrentEditorToken
+      responses:
+        "204": { description: Editor session ended }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/auth/socket-token:
+    get:
+      summary: Get a Socket.IO token
+      operationId: getEditorSocketToken
+      responses:
+        "200":
+          description: Socket.IO token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token]
+                properties:
+                  token: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/editor-handoffs:
+    post:
+      summary: Create an editor Continue or Open handoff
+      operationId: createEditorHandoff
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEditorHandoff" }
+      responses:
+        "201":
+          description: Browser handoff created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, browserUrl, expiresAt]
+                properties:
+                  token: { type: string }
+                  browserUrl: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/editor-handoffs/{token}:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    get:
+      summary: Read browser choices and transfer progress
+      operationId: getEditorHandoff
+      responses:
+        "200":
+          description: Current handoff
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [handoff]
+                properties:
+                  handoff: { $ref: "#/components/schemas/EditorHandoff" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor-handoffs/{token}/complete:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Record choices from the compatible browser-led Continue flow
+      operationId: completeEditorHandoff
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId, mainSessionId, credentialScope]
+              properties:
+                agentId: { type: string }
+                mainSessionId: { type: string }
+                conversationId:
+                  type: string
+                  deprecated: true
+                  description: Older-client alias for mainSessionId
+                credentialScope: { enum: [global, agent, none] }
+      responses:
+        "200": { description: Browser selection recorded }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor-handoffs/{token}/select-agent:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Select an existing agent and return its editor callback
+      operationId: selectEditorAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId]
+              properties:
+                agentId: { type: string }
+      responses:
+        "200":
+          description: Editor callback
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [callbackUri]
+                properties:
+                  callbackUri: { type: string, format: uri }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor-handoffs/{token}/progress:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Update transfer progress from the editor
+      operationId: updateEditorHandoffProgress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { enum: [uploading, complete, failed] }
+                progressMessage: { type: [string, "null"] }
+                error: { type: [string, "null"] }
+      responses:
+        "200": { description: Progress updated }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor-handoffs/{token}/retry:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Request a retry and return its editor callback
+      operationId: retryEditorHandoff
+      responses:
+        "200":
+          description: Retry callback
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [callbackUri]
+                properties:
+                  callbackUri: { type: string, format: uri }
+        "409": { $ref: "#/components/responses/BadRequest" }
+  /api/editor-handoffs/{token}/replace-agent:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Move a failed handoff to a newly created agent
+      operationId: replaceEditorHandoffAgent
+      responses:
+        "200":
+          description: New Agent page for the same local project and sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [browserUrl]
+                properties:
+                  browserUrl: { type: string, format: uri }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor-handoffs/agents/{agentId}/open-url:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      summary: Return the browser URL for one owned agent
+      operationId: getEditorAgentOpenUrl
+      responses:
+        "200":
+          description: Agent page URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [browserUrl]
+                properties:
+                  browserUrl: { type: string, format: uri }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents:
+    get:
+      summary: List editor-capable agents
+      operationId: listEditorAgents
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: "#/components/schemas/Agent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    post:
+      summary: Create an agent for a handoff
+      operationId: createEditorAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAgent" }
+      responses:
+        "201":
+          description: Agent created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/agents/{agentId}:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      summary: Read one agent
+      operationId: getEditorAgent
+      responses:
+        "200":
+          description: Agent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Delete an agent
+      operationId: deleteEditorAgent
+      responses:
+        "204": { description: Agent deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/start:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      summary: Start a stopped agent
+      operationId: startEditorAgent
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        "202": { description: Agent startup requested }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      summary: List the named coding sessions in one workspace
+      operationId: listAgentSessions
+      responses:
+        "200":
+          description: Session list, with Main first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentSession" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Create and optionally start a session or branch
+      operationId: createAgentSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAgentSession" }
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+    patch:
+      summary: Change a session's name, harness, model, or imported source ID
+      operationId: updateAgentSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                runtime: { type: string }
+                model: { type: [string, "null"], maxLength: 200 }
+                sourceProvider: { type: [string, "null"] }
+                sourceSessionId: { type: [string, "null"] }
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Delete a non-Main session and its history
+      operationId: deleteAgentSession
+      responses:
+        "200":
+          description: Session deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}/start:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Start a stopped session
+      operationId: startAgentSession
+      responses:
+        "200":
+          description: Session startup requested
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}/stop:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Stop one secondary harness without deleting its history
+      operationId: stopAgentSession
+      responses:
+        "200":
+          description: Session stopped
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}/restart:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Restart one session harness
+      operationId: restartAgentSession
+      responses:
+        "200":
+          description: Session restarted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      summary: Read exact ordered history for one session
+      operationId: getAgentSessionMessages
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 500 }
+        - name: beforeId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Exact session-history page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages, oldestId, hasMoreOlder]
+                properties:
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentSessionMessage" }
+                  oldestId: { type: [integer, "null"] }
+                  hasMoreOlder: { type: boolean }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Send a prompt to one session
+      operationId: sendAgentSessionMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, minLength: 1 }
+                clientMessageId:
+                  type: string
+                  minLength: 8
+                  maxLength: 100
+                  description: Stable ID reused when retrying the same send
+      responses:
+        "200":
+          description: Prompt accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, messageId]
+                properties:
+                  ok: { type: boolean, const: true }
+                  messageId: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}/messages/{messageId}/branch:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+      - name: messageId
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    post:
+      summary: Replace a user prompt in a new child branch
+      operationId: branchAgentSessionFromMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, minLength: 1, maxLength: 50000 }
+                name: { type: string, minLength: 1, maxLength: 100 }
+                start: { type: boolean, default: true }
+      responses:
+        "201":
+          description: Child branch created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSessionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/agents/{agentId}/sessions/{sessionId}/import-messages:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Import editor-parsed history into one exact session log
+      operationId: importAgentSessionMessages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportChatMessages" }
+      responses:
+        "200":
+          description: Import count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/credentials/import-provider:
+    post:
+      summary: Save provider values for compatible account agents
+      operationId: importEditorProviderCredentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderCredentials" }
+      responses:
+        "200":
+          description: Imported value names
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/credentials/agents/{agentId}/import-provider:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      summary: Store provider values on one destination agent before startup
+      operationId: importDestinationAgentProviderCredentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderCredentials" }
+      responses:
+        "200":
+          description: Stored value names
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor/language-models:
+    get:
+      summary: List chat.dev models for the editor's built-in Chat view
+      operationId: listEditorLanguageModels
+      responses:
+        "200":
+          description: Available editor chat models
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: "#/components/schemas/EditorLanguageModel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/editor/language-models/chat-stream:
+    post:
+      summary: Stream one response from a selected editor chat model
+      operationId: streamEditorLanguageModelChat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EditorLanguageModelChatRequest" }
+      responses:
+        "200":
+          description: Newline-delimited response events
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: One JSON event per line. Events include text, tool_call, error, and done.
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/editor/machine-tiers:
+    get:
+      summary: List current machine choices for the editor Continue form
+      operationId: listEditorMachineTiers
+      responses:
+        "200":
+          description: Current machine specs, included disk, and monthly prices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tiers]
+                properties:
+                  tiers:
+                    type: array
+                    items: { $ref: "#/components/schemas/EditorMachineTier" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/chat/{agentId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      summary: Read the chat.dev conversation transcript for an agent
+      operationId: getEditorAgentMessages
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200, minimum: 1, maximum: 1000 }
+        - name: beforeId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Chat transcript page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages, hasMoreOlder]
+                properties:
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/ChatMessage" }
+                  oldestId: { type: [integer, "null"] }
+                  hasMoreOlder: { type: boolean }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/chat/{agentId}/import-messages:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      summary: Import editor-parsed user and assistant transcript rows
+      operationId: importEditorAgentMessages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportChatMessages" }
+      responses:
+        "200":
+          description: Import count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+components:
+  responses:
+    BadRequest:
+      description: Request could not be completed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Agent was not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  parameters:
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema: { type: string }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string }
+    HandoffToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    DeviceAuthorization:
+      type: object
+      required: [deviceCode, userCode, verificationUriComplete, interval, expiresAt]
+      properties:
+        deviceCode: { type: string }
+        userCode: { type: string }
+        verificationUriComplete: { type: string, format: uri }
+        interval: { type: integer }
+        expiresAt: { type: string, format: date-time }
+    Agent:
+      type: object
+      required: [id, name, status, agentRuntime, machineSize]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status:
+          enum: [starting, running, errored, stopped, deleted]
+        statusSummary: { type: [string, "null"] }
+        agentRuntime:
+          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
+        model: { type: [string, "null"] }
+        machineSize: { type: string }
+    AgentSession:
+      type: object
+      required: [id, agentId, name, runtime, status, isMain, parentSessionId, forkedFromMessageId, forkThroughRuntimeTurnId, branchKind, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        agentId: { type: string }
+        name: { type: string }
+        runtime: { type: string }
+        model: { type: [string, "null"] }
+        status: { enum: [starting, running, stopped, errored] }
+        isMain: { type: boolean }
+        isPrimary:
+          type: boolean
+          deprecated: true
+          description: Older-client alias for isMain
+        parentSessionId: { type: [string, "null"] }
+        forkedFromMessageId: { type: [integer, "null"] }
+        forkThroughRuntimeTurnId: { type: [string, "null"] }
+        branchKind: { enum: [main, new, branch, edit, import] }
+        sourceProvider: { type: [string, "null"] }
+        sourceSessionId: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastStartedAt: { type: [string, "null"], format: date-time }
+        lastStoppedAt: { type: [string, "null"], format: date-time }
+    AgentSessionResponse:
+      type: object
+      required: [session]
+      properties:
+        session: { $ref: "#/components/schemas/AgentSession" }
+    CreateAgentSession:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        parentSessionId: { type: [string, "null"] }
+        runtime:
+          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
+        model: { type: [string, "null"] }
+        sourceProvider: { type: [string, "null"] }
+        sourceSessionId: { type: [string, "null"] }
+        start: { type: boolean, default: true }
+    AgentSessionMessage:
+      type: object
+      required: [id, agentId, sessionId, role, content, append, sourceKey, createdAt]
+      properties:
+        id: { type: integer }
+        agentId: { type: string }
+        sessionId: { type: string }
+        role: { enum: [user, agent] }
+        content: { type: string }
+        kind: { type: [string, "null"] }
+        phase: { type: [string, "null"] }
+        runtimeTurnId: { type: [string, "null"] }
+        streamId: { type: [string, "null"] }
+        append: { type: boolean }
+        sourceKey: { type: string }
+        createdAt: { type: string, format: date-time }
+    CreateAgent:
+      type: object
+      required: [name, agentRuntime, machineSize]
+      properties:
+        name: { type: string }
+        agentRuntime:
+          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
+        machineSize: { type: string }
+        volumeGb: { type: integer, minimum: 1 }
+        model: { type: string }
+        autoStart: { type: boolean, default: true }
+        useChatgpt: { type: boolean }
+        useClaude: { type: boolean }
+    EditorConversation:
+      type: object
+      required: [id, title, provider, runtime, mtime]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        provider: { enum: [codex, claude, cursor] }
+        runtime: { enum: [codex-tmux, claude-code-tmux, cursor-agent-tmux] }
+        model: { type: string }
+        mtime: { type: number }
+        credentialSources:
+          type: array
+          items: { type: string }
+    CreateEditorHandoff:
+      oneOf:
+        - type: object
+          required: [kind, callbackUri, projectName, projectPath, conversations]
+          properties:
+            kind: { const: continue }
+            callbackUri: { type: string, format: uri }
+            projectName: { type: string }
+            projectPath: { type: string }
+            conversations:
+              type: array
+              minItems: 1
+              items: { $ref: "#/components/schemas/EditorConversation" }
+        - type: object
+          required: [kind, callbackUri]
+          properties:
+            kind: { const: open }
+            callbackUri: { type: string, format: uri }
+    EditorHandoff:
+      type: object
+      required: [kind, callbackUri, conversations, status, credentialScope, expiresAt]
+      properties:
+        kind: { enum: [continue, open] }
+        callbackUri: { type: string, format: uri }
+        projectName: { type: [string, "null"] }
+        projectPath: { type: [string, "null"] }
+        conversations:
+          type: array
+          items: { $ref: "#/components/schemas/EditorConversation" }
+        status: { enum: [pending, selected, uploading, complete, failed, retry_requested] }
+        agentId: { type: [string, "null"] }
+        mainSessionId: { type: [string, "null"] }
+        conversationId: { type: [string, "null"] }
+        credentialScope: { enum: [global, agent, none] }
+        progressMessage: { type: [string, "null"] }
+        error: { type: [string, "null"] }
+        expiresAt: { type: string, format: date-time }
+        agentAvailable:
+          type: [boolean, "null"]
+          description: Whether the selected agent still exists on this account; null before an agent is selected
+    ProviderCredentials:
+      type: object
+      required: [provider, values]
+      properties:
+        provider:
+          enum: [codex, claude, cursor]
+        values:
+          type: object
+          additionalProperties: { type: string }
+    EditorLanguageModel:
+      type: object
+      required: [id, name, provider, family, version, maxInputTokens, maxOutputTokens, capabilities]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        provider: { type: string }
+        family: { type: string }
+        version: { type: string }
+        detail: { type: string }
+        tooltip: { type: string }
+        maxInputTokens: { type: integer }
+        maxOutputTokens: { type: integer }
+        capabilities:
+          type: object
+          properties:
+            toolCalling:
+              oneOf:
+                - { type: boolean }
+                - { type: integer }
+            imageInput: { type: boolean }
+    EditorMachineTier:
+      type: object
+      required: [id, label, cpuKind, cpus, memoryMb, volumeGb, monthlyUsd]
+      properties:
+        id: { enum: [standard, pro, max, gpu] }
+        label: { type: string }
+        cpuKind: { enum: [shared, performance] }
+        cpus: { type: integer }
+        memoryMb: { type: integer }
+        volumeGb: { type: integer }
+        monthlyUsd: { type: number }
+        gpuKind: { type: string }
+        gpus: { type: integer }
+    EditorLanguageModelChatRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model: { type: string }
+        messages:
+          type: array
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: { enum: [user, assistant] }
+              name: { type: string }
+              content:
+                type: array
+                items:
+                  type: object
+                  required: [type]
+                  properties:
+                    type: { enum: [text, data, tool_call, tool_result] }
+                    text: { type: string }
+                    mimeType: { type: string }
+                    dataBase64: { type: string }
+                    callId: { type: string }
+                    name: { type: string }
+                    input: {}
+        options:
+          type: object
+          additionalProperties: true
+    ChatMessage:
+      type: object
+      required: [id, role, content]
+      properties:
+        id: { type: integer }
+        role: { enum: [user, agent, assistant] }
+        content: { type: string }
+        source: { type: [string, "null"] }
+        phase: { type: [string, "null"] }
+        createdAt: { type: [string, "null"], format: date-time }
+    ImportChatMessages:
+      type: object
+      required: [provider, sessionId, messages]
+      properties:
+        provider: { enum: [codex, claude, cursor] }
+        sessionId: { type: string }
+        messages:
+          type: array
+          maxItems: 1000
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: { enum: [user, assistant] }
+              content: { type: string }
+              createdAt: { type: [string, "null"], format: date-time }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }

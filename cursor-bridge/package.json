@@ -1,0 +1,33 @@
+{
+  "name": "chatdev-cursor-agent-bridge",
+  "displayName": "chat.dev Cursor Agent Bridge",
+  "description": "Connects Cursor's native Agent panel to the active chat.dev coding session.",
+  "version": "1.1.0",
+  "publisher": "chatdev",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "main": "./extension.js",
+  "enabledApiProposals": [
+    "cursor"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "chatdev.cursorBridge.refresh",
+        "title": "Refresh chat.dev Cursor Agent Bridge"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "chatdev.cursorBridge.refresh",
+          "when": "false"
+        }
+      ]
+    }
+  }
+}

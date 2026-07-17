@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chat.dev Remote Agents documentation screens</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1440px; height: 900px; overflow: hidden; background: #111318; color: #d7dae0; font: 14px Arial, sans-serif; }
+  body { display: grid; grid-template-rows: 36px 1fr 24px; }
+  .titlebar { display: flex; align-items: center; justify-content: center; background: #181a20; border-bottom: 1px solid #2a2d35; color: #b7bac2; font-size: 13px; }
+  .app { display: grid; grid-template-columns: 50px 262px 1fr; min-height: 0; }
+  .activity { background: #17191f; border-right: 1px solid #292c34; display: flex; flex-direction: column; align-items: center; gap: 23px; padding-top: 16px; color: #9297a3; }
+  .activity span { width: 25px; height: 25px; display: grid; place-items: center; font-size: 20px; }
+  .activity .active { color: #f5f6f8; border-left: 2px solid #4d89ff; }
+  .sidebar { background: #1d2027; border-right: 1px solid #2c3038; min-width: 0; }
+  .side-title { height: 43px; display: flex; align-items: center; padding: 0 18px; font-size: 11px; letter-spacing: .7px; color: #c7cad1; }
+  .tree { padding: 2px 10px; line-height: 27px; color: #c8cbd2; }
+  .tree .folder { color: #f0f1f3; font-weight: 600; }
+  .tree .indent { padding-left: 22px; }
+  .tree .selected { background: #30343d; margin: 0 -10px; padding-left: 32px; }
+  .work { display: grid; grid-template-rows: 43px 1fr 232px; min-width: 0; }
+  .tabs { display: flex; background: #181a20; border-bottom: 1px solid #2c3038; }
+  .tab { display: flex; align-items: center; padding: 0 18px; min-width: 170px; background: #20232a; border-right: 1px solid #2c3038; border-top: 1px solid #4d89ff; color: #eff0f2; }
+  .editor { position: relative; padding: 26px 34px; background: #15171c; font: 15px/1.75 Consolas, monospace; color: #c9ccd3; }
+  .line { display: flex; }
+  .num { width: 42px; color: #555b67; user-select: none; }
+  .kw { color: #d38cff; } .fn { color: #73b7ff; } .str { color: #a5d68a; } .muted { color: #737986; }
+  .terminal { background: #111318; border-top: 1px solid #30343c; padding: 0 22px 16px; font: 14px/1.65 Consolas, monospace; color: #d5d8de; }
+  .term-tabs { height: 38px; display: flex; align-items: center; gap: 24px; color: #9ba0aa; font: 12px Arial, sans-serif; }
+  .term-tabs .active { color: #f0f1f3; border-bottom: 1px solid #75a2ff; height: 38px; display: flex; align-items: center; }
+  .prompt { color: #55dca8; } .agent { color: #78a5ff; }
+  .status { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; background: #2166b2; color: white; font-size: 12px; }
+  .status-left, .status-right { display: flex; gap: 18px; }
+  .overlay { position: fixed; inset: 36px 0 24px; background: rgba(5, 6, 9, .2); }
+  .picker { position: fixed; left: 50%; top: 94px; width: 720px; transform: translateX(-50%); background: #24272f; border: 1px solid #3b404a; box-shadow: 0 18px 55px rgba(0,0,0,.55); border-radius: 6px; overflow: hidden; }
+  .picker-title { padding: 15px 17px 8px; color: #f3f4f6; font-size: 13px; }
+  .input { margin: 0 12px 10px; height: 40px; border: 1px solid #4d89ff; background: #17191f; padding: 9px 12px; color: #f6f7f9; font-size: 15px; }
+  .row { min-height: 59px; padding: 10px 17px; border-top: 1px solid #30343d; display: grid; grid-template-columns: 1fr auto; align-items: center; }
+  .row.selected { background: #174f8c; }
+  .row-title { font-size: 14px; color: #f4f5f7; margin-bottom: 5px; }
+  .row-desc { font-size: 12px; color: #aeb3bd; }
+  .row.selected .row-desc { color: #d8e7f8; }
+  .key { color: #aeb3bd; font-size: 12px; }
+  .brand { color: #54dfa9; font-weight: 700; }
+  .callout { position: fixed; right: 35px; bottom: 54px; padding: 9px 13px; background: #24272f; border: 1px solid #3a3f49; border-radius: 4px; box-shadow: 0 8px 30px rgba(0,0,0,.4); color: #dfe2e7; }
+  .step-marker { position: fixed; z-index: 5; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #f4b740; color: #111318; font-weight: 700; box-shadow: 0 0 0 4px rgba(244,183,64,.25); }
+  .step-note { position: fixed; z-index: 5; padding: 10px 12px; background: #f5f6f8; color: #17191f; border-radius: 4px; font-weight: 600; box-shadow: 0 10px 28px rgba(0,0,0,.45); }
+  .extensions-highlight { position: fixed; z-index: 4; left: 7px; top: 237px; width: 36px; height: 37px; border: 3px solid #f4b740; border-radius: 5px; }
+  .drop-file { display: flex; align-items: center; gap: 14px; margin: 52px auto 18px; width: 360px; padding: 17px; background: #f5f6f8; color: #17191f; border-radius: 5px; box-shadow: 0 14px 38px rgba(0,0,0,.48); font-weight: 700; }
+  .file-icon { display: grid; place-items: center; width: 42px; height: 50px; background: #55dca8; color: #101216; border-radius: 3px; font-size: 12px; }
+  .drop-target { margin: 0 auto 45px; width: 530px; padding: 44px 20px; border: 2px dashed #6d9eff; background: #1d2635; text-align: center; color: #f2f4f8; font-size: 17px; }
+  .panel-button { display: block; margin: 8px 6px; padding: 7px 10px; background: #0e639c; color: #fff; text-align: center; line-height: 20px; }
+  .action-row { margin: 2px -10px; padding: 6px 12px 6px 22px; line-height: 18px; }
+  .action-desc { color: #9ea3ad; font-size: 11px; line-height: 15px; }
+  .agent-row { margin: 0 -10px; padding: 6px 12px; line-height: 18px; }
+  .agent-meta { color: #9ea3ad; font-size: 12px; }
+  .continue-page { max-width: 760px; margin: 0 auto; padding: 25px 30px 40px; font: 13px/1.45 Arial, sans-serif; color: #d7dae0; }
+  .continue-page h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  .continue-project { margin-top: 5px; color: #8f96a3; }
+  .continue-section { padding: 18px 0; border-top: 1px solid #30343c; }
+  .continue-section:first-of-type { margin-top: 17px; }
+  .continue-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+  .continue-wide { grid-column: 1 / -1; }
+  .continue-label { display: block; margin-bottom: 6px; font-weight: 600; }
+  .continue-control { min-height: 36px; padding: 8px 10px; border: 1px solid #3a404a; background: #1b1e24; color: #f0f1f3; }
+  .continue-hint { margin-top: 5px; color: #858c99; font-size: 11px; }
+  .machines { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid #3a404a; }
+  .machine { min-height: 74px; padding: 9px; border-right: 1px solid #3a404a; }
+  .machine:last-child { border-right: 0; }
+  .machine.active { color: white; background: #0e639c; }
+  .machine small { display: block; margin-top: 3px; color: #9ba2ae; }
+  .machine.active small { color: #dbeafb; }
+  .credential-choice { margin: 8px 0; }
+  .continue-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 15px; border-top: 1px solid #30343c; }
+  .create-button { padding: 9px 16px; background: #0e639c; color: white; }
+</style>
+<body>
+  <div class="titlebar"><span id="windowTitle">payments-api - Visual Studio Code</span></div>
+  <main class="app">
+    <aside class="activity"><span id="explorerIcon" class="active">▱</span><span>⌕</span><span>⑂</span><span>▷</span><span id="extensionsIcon">▦</span><span id="chatdevIcon">&gt;_</span></aside>
+    <aside class="sidebar">
+      <div class="side-title">EXPLORER</div>
+      <div class="tree">
+        <div class="folder">⌄ PAYMENTS-API</div>
+        <div class="indent">⌄ src</div>
+        <div class="indent selected">&nbsp;&nbsp;server.ts</div>
+        <div class="indent">&nbsp;&nbsp;billing.ts</div>
+        <div class="indent">&nbsp;&nbsp;types.ts</div>
+        <div class="indent">README.md</div>
+        <div class="indent">package.json</div>
+        <div class="indent">pnpm-lock.yaml</div>
+      </div>
+    </aside>
+    <section class="work">
+      <div class="tabs"><div class="tab">server.ts</div></div>
+      <div class="editor">
+        <div class="line"><span class="num">1</span><span><span class="kw">import</span> { createServer } <span class="kw">from</span> <span class="str">"node:http"</span>;</span></div>
+        <div class="line"><span class="num">2</span></div>
+        <div class="line"><span class="num">3</span><span><span class="kw">export async function</span> <span class="fn">startServer</span>() {</span></div>
+        <div class="line"><span class="num">4</span><span>&nbsp;&nbsp;<span class="kw">const</span> server = <span class="fn">createServer</span>(app);</span></div>
+        <div class="line"><span class="num">5</span><span>&nbsp;&nbsp;<span class="kw">await</span> <span class="fn">listen</span>(server, process.env.PORT);</span></div>
+        <div class="line"><span class="num">6</span><span>}</span></div>
+        <div class="line"><span class="num">7</span></div>
+        <div class="line"><span class="num">8</span><span class="muted">// Continue editing normally after the handoff.</span></div>
+      </div>
+      <div class="terminal">
+        <div class="term-tabs"><span>PROBLEMS</span><span>OUTPUT</span><span class="active" id="terminalTitle">TERMINAL</span></div>
+        <div><span class="prompt">you</span> Fix the retry behavior and keep the existing API contract.</div>
+        <div><span class="agent">codex</span> I found the retry loop in src/billing.ts. I’ll update it and run the focused tests.</div>
+        <div class="muted">✓ 14 tests passed</div>
+      </div>
+    </section>
+  </main>
+  <footer class="status"><div class="status-left"><span>⑂ main*</span><span>↻</span></div><div class="status-right"><span id="connection">Local workspace</span><span>Ln 8, Col 1</span><span>UTF-8</span></div></footer>
+  <div class="overlay"></div>
+  <section class="picker" id="picker"></section>
+  <div class="callout" id="callout"></div>
+<script>
+  const screen = new URLSearchParams(location.search).get("screen") || "command";
+  const picker = document.querySelector("#picker");
+  const callout = document.querySelector("#callout");
+  const screens = {
+    install: {
+      title: "Extensions: More Actions (...)",
+      input: "Install the downloaded chat.dev extension package",
+      rows: [
+        ["Install from VSIX...", "Choose the chatdev-remote .vsix file from your Downloads folder", "Enter"],
+        ["Install from Location...", "Install an extension from a local or remote source", ""],
+        ["Check for Extension Updates", "Check installed extensions for updates", ""],
+      ],
+      note: "Extensions → ... → Install from VSIX...",
+    },
+    signin: {
+      title: "Sign in to chat.dev",
+      input: "> chat.dev: Sign In",
+      rows: [
+        ["Sign In", "Open chat.dev in your browser and approve this editor", "Enter"],
+        ["Continue", "Open chat.dev to choose settings and a local AI conversation", ""],
+        ["Open", "Choose an agent in the browser and return to this editor", ""],
+      ],
+      note: "Run chat.dev: Sign In from the Command Palette",
+    },
+    command: {
+      title: "Continue your current conversation",
+      input: "> chat.dev: Continue",
+      rows: [
+        ["Continue", "Choose agent settings and a local AI conversation in chat.dev", "Enter"],
+        ["Open", "Choose an agent and open its project and conversation together", ""],
+        ["Sign In", "Connect this editor to your chat.dev account", ""],
+      ],
+      note: "Open the Command Palette with Ctrl/Cmd+Shift+P",
+    },
+    continue: {
+      title: "Continue on chat.dev",
+      input: "",
+      rows: [],
+      note: "",
+    },
+    agent: {
+      title: "Agent workspace",
+      input: "",
+      rows: [],
+      note: "",
+    },
+    sessions: {
+      title: "Choose the conversation to continue on chat.dev",
+      input: "Most recent conversation first",
+      rows: [
+        ["Fix payment retries", "Codex · Today at 10:42 AM", ""],
+        ["Migrate billing types", "Claude Code · Yesterday at 4:18 PM", ""],
+        ["Refactor login flow", "Codex · Today, 10:42 AM", ""],
+      ],
+      note: "Codex and Claude Code conversations are detected from the open project",
+    },
+    credentials: {
+      title: "Provider credentials",
+      input: "Choose where the local provider login should be available",
+      rows: [
+        ["All chat.dev agents", "Recommended · saved account credential · Codex login", ""],
+        ["This agent only", "Install on the destination machine without saving it to the account vault", ""],
+        ["Do not upload credentials", "Use the provider connection already configured on chat.dev", ""],
+      ],
+      note: "You choose where your local provider login is stored",
+    },
+    open: {
+      title: "Open a chat.dev agent",
+      input: "Choose an agent workspace",
+      rows: [
+        ["payments-api", "running · pro · codex-tmux", ""],
+        ["docs-refresh", "stopped · standard · claude-code-tmux", ""],
+        ["api-cleanup", "running · standard · codex-tmux", ""],
+      ],
+      note: "Stopped agents start automatically when opened",
+    },
+    panel: {
+      title: "chat.dev",
+      input: "",
+      rows: [],
+      note: "",
+    },
+    panelsignin: {
+      title: "chat.dev",
+      input: "",
+      rows: [],
+      note: "",
+    },
+  };
+  const selected = screens[screen];
+  picker.innerHTML = `<div class="picker-title">${selected.title}</div><div class="input">${selected.input}</div>` + selected.rows.map((row, i) => `<div class="row ${i === 0 ? "selected" : ""}"><div><div class="row-title"><span class="brand">chat.dev</span> ${row[0]}</div><div class="row-desc">${row[1]}</div></div><div class="key">${row[2]}</div></div>`).join("");
+  callout.textContent = selected.note;
+  if (screen === "install") {
+    document.querySelector("#explorerIcon").classList.remove("active");
+    document.querySelector("#extensionsIcon").classList.add("active");
+    document.querySelector(".side-title").textContent = "EXTENSIONS";
+    document.querySelector(".tree").innerHTML = `<div style="border:1px solid #555b67;background:#15171c;padding:0 8px;margin:0 0 12px">Search Extensions</div><div class="folder">INSTALLED</div>`;
+    picker.innerHTML = `<div class="drop-file"><span class="file-icon">VSIX</span><span>chatdev-remote-0.1.0.vsix</span></div><div class="drop-target">Drag the downloaded file into Extensions</div>`;
+    callout.textContent = "Drop the file to install it";
+  }
+  if (screen === "panel") {
+    document.querySelector(".overlay").remove();
+    picker.remove();
+    callout.remove();
+    document.querySelector("#explorerIcon").classList.remove("active");
+    document.querySelector("#chatdevIcon").classList.add("active");
+    document.querySelector(".side-title").textContent = "CHAT.DEV";
+    document.querySelector(".tree").innerHTML = `<div class="folder">ACTIONS &nbsp; ☁ ▱ ?</div><div class="action-row"><b>☁ Continue</b><div class="action-desc">Make this project available on chat.dev</div></div><div class="action-row"><b>▱ Open</b><div class="action-desc">Bring an agent into this editor</div></div><div class="action-row"><b>⌨ Native shortcuts</b><div class="action-desc">Ctrl/Cmd+Alt+Shift+C or O</div></div><div class="action-row"><b>⇥ Sign out</b><div class="action-desc">Disconnect this editor</div></div><div class="folder" style="margin-top:12px">AGENTS &nbsp; ▱ ↻</div><div class="agent-row selected"><b>payments-api &nbsp; ▱</b><div class="agent-meta">running · pro · Codex</div></div><div class="agent-row"><b>docs-refresh &nbsp; ▱</b><div class="agent-meta">stopped · standard · Claude Code</div></div><div class="agent-row"><b>api-cleanup &nbsp; ▱</b><div class="agent-meta">running · standard · Codex</div></div>`;
+    document.querySelector("#connection").textContent = ">_ chat.dev";
+  }
+  if (screen === "continue") {
+    document.querySelector(".overlay").remove();
+    picker.remove();
+    callout.remove();
+    document.querySelector(".work").style.gridTemplateRows = "43px 1fr";
+    document.querySelector(".terminal").remove();
+    document.querySelector(".tabs").innerHTML = `<div class="tab">Continue on chat.dev</div>`;
+    document.querySelector(".editor").style.padding = "0";
+    document.querySelector(".editor").style.overflow = "auto";
+    document.querySelector(".editor").innerHTML = `<div class="continue-page">
+      <h1>Continue on chat.dev</h1><div class="continue-project">payments-api</div>
+      <div class="continue-section"><div class="continue-grid">
+        <div class="continue-wide"><span class="continue-label">Main session</span><div class="continue-control">Fix payment retries</div><div class="continue-hint">Cursor Agent · continues with Cursor Agent · Today at 10:42 AM</div></div>
+        <div><span class="continue-label">Agent name</span><div class="continue-control">payments-api</div></div>
+        <div><span class="continue-label">Model</span><div class="continue-control">gpt-5.6</div></div>
+      </div></div>
+      <div class="continue-section"><span class="continue-label">Machine</span><div class="machines">
+        <div class="machine">Standard<small>2 shared vCPU · 1 GB</small><small>1 GB disk · $7/mo</small></div><div class="machine active">Pro<small>4 shared vCPU · 4 GB</small><small>10 GB disk · $39/mo</small></div><div class="machine">Max<small>4 dedicated vCPU · 8 GB</small><small>50 GB disk · $130/mo</small></div><div class="machine">GPU<small>8 dedicated vCPU · 32 GB</small><small>100 GB disk · $3,432/mo</small></div>
+      </div><div style="width:50%;margin-top:13px"><span class="continue-label">Workspace disk (GB)</span><div class="continue-control">10</div></div></div>
+      <div class="continue-section"><span class="continue-label">Local provider login</span><div class="credential-choice">◉ Available to all my chat.dev agents</div><div class="credential-choice">○ This agent only</div><div class="credential-choice">○ Use the provider connection already on chat.dev</div><div class="continue-hint">Cursor auth.json</div></div>
+      <div class="continue-footer"><span class="continue-hint">More settings</span><div class="create-button">Create new agent</div></div>
+    </div>`;
+    document.querySelector("#connection").textContent = ">_ chat.dev";
+  }
+  if (screen === "agent") {
+    document.querySelector(".overlay").remove();
+    picker.remove();
+    callout.remove();
+    document.querySelector("#windowTitle").textContent = "payments-api [chat.dev] - Cursor";
+    document.querySelector("#connection").textContent = "chat.dev: payments-api";
+    document.querySelector("#explorerIcon").classList.remove("active");
+    document.querySelector("#chatdevIcon").classList.add("active");
+    document.querySelector(".side-title").textContent = "CHAT.DEV";
+    document.querySelector(".tree").innerHTML = `<div class="folder">ACTIONS &nbsp; &gt;_ ?</div><div class="action-row selected"><b>&gt;_ Agent</b><div class="action-desc">Open the shared coding conversation</div></div><div class="action-row"><b>$_ Shell</b><div class="action-desc">Open the agent machine</div></div><div class="action-row"><b>⇥ Sign out</b><div class="action-desc">Disconnect this editor</div></div><div class="folder" style="margin-top:12px">AGENTS &nbsp; ▱ ↻</div><div class="agent-row"><b>payments-api &nbsp; ▱</b><div class="agent-meta">running · pro · Cursor Agent</div></div>`;
+    document.querySelector(".work").style.gridTemplateRows = "43px 1fr 330px";
+    document.querySelector("#terminalTitle").textContent = "TERMINAL · payments-api · Agent";
+    document.querySelector(".terminal").innerHTML = `<div class="term-tabs"><span>PROBLEMS</span><span>OUTPUT</span><span class="active">TERMINAL · payments-api · Agent</span></div><div style="color:#f4e7a1;font-weight:700;margin:8px 0 13px">Cursor Agent</div><div><span class="muted">gpt-5.6 · Run Everything · /data/workspace</span></div><br><div style="background:#24262b;padding:8px 10px">Fix the retry behavior and keep the existing API contract.</div><br><div>I found the retry loop in <span class="agent">src/billing.ts</span>. I updated it and ran the focused tests.</div><br><div class="muted">Read src/billing.ts &nbsp; · &nbsp; 14 tests passed</div><br><div style="background:#1b1d22;padding:8px 10px;color:#9fa5b0">→ Add a follow-up</div>`;
+  }
+  if (screen === "panelsignin") {
+    document.querySelector(".overlay").remove();
+    picker.remove();
+    callout.remove();
+    document.querySelector("#explorerIcon").classList.remove("active");
+    document.querySelector("#chatdevIcon").classList.add("active");
+    document.querySelector(".side-title").textContent = "CHAT.DEV";
+    document.querySelector(".tree").innerHTML = `<div class="folder">ACTIONS &nbsp; ?</div><div class="action-row"><b>⇥ Sign in to chat.dev</b><div class="action-desc">Connect VS Code or Cursor</div></div>`;
+    document.querySelector("#connection").textContent = ">_ chat.dev";
+  }
+  if (screen === "open") {
+    document.querySelector("#windowTitle").textContent = "payments-api [chat.dev] - Visual Studio Code";
+    document.querySelector("#connection").textContent = "chat.dev: payments-api";
+    document.querySelector("#terminalTitle").textContent = "TERMINAL · payments-api · Agent";
+  }
+</script>
+</body>
+</html>

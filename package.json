@@ -1,0 +1,398 @@
+{
+  "name": "chatdev-remote",
+  "displayName": "chat.dev Remote Agents",
+  "description": "Continue local Codex, Claude Code, and Cursor conversations on a live chat.dev workspace from VS Code or Cursor.",
+  "version": "0.1.0",
+  "publisher": "chatdev",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mmirman/chatdev-vscode"
+  },
+  "homepage": "https://github.com/mmirman/chatdev-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/mmirman/chatdev-vscode/issues"
+  },
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "chat.dev",
+    "remote",
+    "coding agent",
+    "codex",
+    "claude code",
+    "cursor",
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onFileSystem:chatdev",
+    "onView:chatdev.actions",
+    "onView:chatdev.agents",
+    "onCommand:chatdev.signIn",
+    "onCommand:chatdev.openAgent",
+    "onCommand:chatdev.moveSession",
+    "onCommand:chatdev.virtualizeWorkspace",
+    "onCommand:chatdev.enableCursorAgentPanel",
+    "onCommand:chatdev.openCursorAgentSession",
+    "onCommand:chatdev.openCursorAgentItem",
+    "onCommand:chatdev.internal.cursorBridgeReady",
+    "onCommand:chatdev.internal.cursorProviderEnabled",
+    "onCommand:chatdev.internal.createCursorAgentHandle",
+    "onCommand:chatdev.internal.cursorAgentCreated",
+    "onCommand:chatdev.internal.bindCursorSession",
+    "onChatParticipant:chatdev.agent",
+    "onUri"
+  ],
+  "main": "./dist/extension.js",
+  "files": [
+    "dist",
+    "cursor-bridge",
+    "docs/*.md",
+    "docs/*.yaml",
+    "docs/*.json",
+    "docs/images/*.png",
+    "media/icon.png",
+    "media/activity.svg",
+    "README.md",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "package": "npm run check && npm run build && vsce package --no-dependencies"
+  },
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "chatdev.agent",
+        "name": "chatdev",
+        "fullName": "chat.dev",
+        "description": "Use your chat.dev models in editor chat",
+        "isSticky": true
+      }
+    ],
+    "commands": [
+      {
+        "command": "chatdev.signIn",
+        "title": "chat.dev: Sign In"
+      },
+      {
+        "command": "chatdev.signOut",
+        "title": "chat.dev: Sign Out"
+      },
+      {
+        "command": "chatdev.openAgent",
+        "title": "chat.dev: Open",
+        "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "chatdev.openAgentNative",
+        "title": "chat.dev: Open (Native Picker)",
+        "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "chatdev.openAgentItem",
+        "title": "Open Agent",
+        "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "chatdev.moveSession",
+        "title": "chat.dev: Continue",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "chatdev.continueNative",
+        "title": "chat.dev: Continue (Native Picker)",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "chatdev.openAgentTerminal",
+        "title": "chat.dev: Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "chatdev.openAgentTerminalItem",
+        "title": "Agent",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "chatdev.openShell",
+        "title": "chat.dev: Open an Agent Machine Shell",
+        "icon": "$(terminal-bash)"
+      },
+      {
+        "command": "chatdev.openShellItem",
+        "title": "Open Agent Machine Shell",
+        "icon": "$(terminal-bash)"
+      },
+      {
+        "command": "chatdev.openGuide",
+        "title": "chat.dev: Help",
+        "icon": "$(question)"
+      },
+      {
+        "command": "chatdev.refreshAgents",
+        "title": "Refresh Agents",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "chatdev.enableCursorAgentPanel",
+        "title": "chat.dev: Connect Cursor Agent Panel",
+        "icon": "$(hubot)"
+      },
+      {
+        "command": "chatdev.openCursorAgentSession",
+        "title": "chat.dev: Cursor Agent",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "chatdev.openCursorAgentItem",
+        "title": "Open in Cursor Agent",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "chatdev.internal.cursorBridgeReady",
+        "title": "chat.dev Internal: Cursor Bridge Ready"
+      },
+      {
+        "command": "chatdev.internal.cursorProviderEnabled",
+        "title": "chat.dev Internal: Cursor Provider Enabled"
+      },
+      {
+        "command": "chatdev.internal.createCursorAgentHandle",
+        "title": "chat.dev Internal: Create Cursor Agent Handle"
+      },
+      {
+        "command": "chatdev.internal.cursorAgentCreated",
+        "title": "chat.dev Internal: Cursor Agent Created"
+      },
+      {
+        "command": "chatdev.internal.bindCursorSession",
+        "title": "chat.dev Internal: Bind Cursor Session"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "chatdev",
+          "title": "chat.dev",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "chatdev": [
+        {
+          "id": "chatdev.actions",
+          "name": "Actions"
+        },
+        {
+          "id": "chatdev.agents",
+          "name": "chat.dev Project Agents",
+          "when": "chatdev.signedIn"
+        }
+      ]
+    },
+    "languageModelChatProviders": [
+      {
+        "vendor": "chatdev",
+        "displayName": "chat.dev",
+        "managementCommand": "chatdev.signIn"
+      }
+    ],
+    "configuration": {
+      "title": "chat.dev",
+      "properties": {
+        "chatdev.serverUrl": {
+          "type": "string",
+          "scope": "machine",
+          "default": "https://api.chat.dev",
+          "description": "chat.dev API and realtime server URL for this editor installation."
+        },
+        "chatdev.uploadExcludes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Optional file or directory names excluded from the initial workspace upload."
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "chatdev.internal.cursorBridgeReady",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.internal.cursorProviderEnabled",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.internal.bindCursorSession",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.internal.createCursorAgentHandle",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.internal.cursorAgentCreated",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.signOut",
+          "when": "chatdev.signedIn"
+        },
+        {
+          "command": "chatdev.openAgentItem",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.openAgentTerminalItem",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.openShellItem",
+          "when": "false"
+        },
+        {
+          "command": "chatdev.openAgentTerminal",
+          "when": "chatdev.remoteWorkspace"
+        },
+        {
+          "command": "chatdev.openShell",
+          "when": "chatdev.signedIn"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "chatdev.enableCursorAgentPanel",
+          "when": "view == chatdev.agents && chatdev.cursorHost && chatdev.signedIn && !chatdev.cursorBridgeActive",
+          "group": "navigation@3"
+        },
+        {
+          "command": "chatdev.openCursorAgentSession",
+          "when": "view == chatdev.agents && chatdev.cursorHost && chatdev.cursorBridgeActive && chatdev.signedIn",
+          "group": "navigation@3"
+        },
+        {
+          "command": "chatdev.moveSession",
+          "when": "view == chatdev.actions && chatdev.signedIn",
+          "group": "navigation@1"
+        },
+        {
+          "command": "chatdev.openAgentTerminal",
+          "when": "view == chatdev.actions && chatdev.remoteWorkspace",
+          "group": "navigation@1"
+        },
+        {
+          "command": "chatdev.openAgent",
+          "when": "view == chatdev.actions && chatdev.signedIn",
+          "group": "navigation@2"
+        },
+        {
+          "command": "chatdev.openGuide",
+          "when": "view == chatdev.actions",
+          "group": "navigation@3"
+        },
+        {
+          "command": "chatdev.openAgent",
+          "when": "view == chatdev.agents",
+          "group": "navigation@1"
+        },
+        {
+          "command": "chatdev.refreshAgents",
+          "when": "view == chatdev.agents",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "chatdev.openAgentItem",
+          "when": "view == chatdev.agents && viewItem == chatdevAgent",
+          "group": "inline@1"
+        },
+        {
+          "command": "chatdev.openCursorAgentItem",
+          "when": "view == chatdev.agents && viewItem == chatdevAgent && chatdev.cursorHost && chatdev.cursorBridgeActive",
+          "group": "inline@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "chatdev.moveSession",
+          "when": "resourceScheme == file && chatdev.signedIn",
+          "group": "navigation@20"
+        },
+        {
+          "command": "chatdev.openAgentTerminal",
+          "when": "chatdev.remoteWorkspace",
+          "group": "navigation@20"
+        },
+        {
+          "command": "chatdev.openAgent",
+          "when": "chatdev.signedIn",
+          "group": "navigation@21"
+        },
+        {
+          "command": "chatdev.openCursorAgentSession",
+          "when": "chatdev.cursorHost && chatdev.cursorBridgeActive && chatdev.signedIn",
+          "group": "navigation@22"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "chatdev.moveSession",
+          "when": "resourceScheme == file && chatdev.signedIn",
+          "group": "chatdev@1"
+        }
+      ],
+      "menubar/file": [
+        {
+          "command": "chatdev.moveSession",
+          "when": "chatdev.signedIn",
+          "group": "6_close@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "chatdev.continueNative",
+        "key": "ctrl+alt+shift+c",
+        "mac": "cmd+alt+shift+c",
+        "when": "chatdev.signedIn"
+      },
+      {
+        "command": "chatdev.openAgentNative",
+        "key": "ctrl+alt+shift+o",
+        "mac": "cmd+alt+shift+o",
+        "when": "chatdev.signedIn"
+      }
+    ]
+  },
+  "dependencies": {
+    "@vscode/chat-extension-utils": "0.0.0-alpha.5",
+    "socket.io-client": "^4.8.1",
+    "tar": "^7.5.20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2"
+  }
+}
