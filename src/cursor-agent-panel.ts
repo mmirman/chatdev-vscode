@@ -96,7 +96,7 @@ export function registerCursorAgentPanel(context: vscode.ExtensionContext, api: 
       }
       await vscode.commands.executeCommand("setContext", "chatdev.cursorBridgeActive", true);
       if (!activeChatDevAgentId(api)) return false;
-      await controller.openMainSession();
+      await controller.openDefaultSession();
       return true;
     }),
     vscode.commands.registerCommand("chatdev.openCursorAgentSession", async () => {
@@ -158,7 +158,7 @@ class CursorAgentPanelController implements vscode.Disposable {
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly api: ChatDevApi) {}
 
-  async openMainSession(): Promise<void> {
+  async openDefaultSession(): Promise<void> {
     await this.openSession(false);
   }
 
@@ -282,12 +282,12 @@ class CursorAgentPanelController implements vscode.Disposable {
     if (!agentId) return;
     const agent = await this.api.getAgent(agentId);
     const threads = await this.api.listAgentThreads(agent);
-    let thread: AgentThread | undefined = threads.find((candidate) => candidate.isPrimary) || threads[0];
+    let thread: AgentThread | undefined = threads.find((candidate) => candidate.isDefault) || threads[0];
     if (choose && threads.length > 1) {
       thread = await vscode.window.showQuickPick(threads.map((candidate) => ({
-        label: `${candidate.isPrimary ? "$(home)" : "$(comment-discussion)"} ${candidate.name}`,
+        label: `${candidate.isDefault ? "$(home)" : "$(comment-discussion)"} ${candidate.name}`,
         description: `${candidate.runtime}${candidate.model ? ` · ${candidate.model}` : ""}`,
-        detail: candidate.isPrimary ? "Main session" : `${candidate.status} session`,
+        detail: candidate.isDefault ? "Default session" : `${candidate.status} session`,
         thread: candidate,
       })), {
         title: `${agent.name} sessions`,
@@ -313,7 +313,7 @@ class CursorAgentPanelController implements vscode.Disposable {
     const rows = await this.api.getAgentThreadHistory(agentId, thread.id);
     const history = cursorHistory(rows, agentId, thread.id);
     const before = await selectedCursorComposerIds();
-    const title = thread.isPrimary ? agent.name : `${agent.name} [${thread.name}]`;
+    const title = thread.isDefault ? agent.name : `${agent.name} [${thread.name}]`;
     this.pendingCreatedComposerBinding = { agentId, threadId: thread.id };
     try {
       await vscode.commands.executeCommand("composer.createNew", {
@@ -792,7 +792,7 @@ async function resolveCursorSession(
   const thread = threads.find((candidate) => candidate.id === state.chatdevThreadId)
     || threads.find((candidate) => candidate.id === binding.threadId)
     || threads.find((candidate) => candidate.sourceSessionId === cursorSessionId)
-    || (binding.threadId === agentId ? threads.find((candidate) => candidate.isPrimary) : undefined);
+    || (binding.threadId === agentId ? threads.find((candidate) => candidate.isDefault) : undefined);
   if (!thread) throw new Error("This chat.dev agent has no coding session.");
   return { agentId, thread };
 }

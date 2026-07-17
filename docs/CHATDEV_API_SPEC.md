@@ -8,12 +8,12 @@ This document explains what the chat.dev server must do for the VS Code/Cursor e
 
 The extension has two main workflows:
 
-1. **Continue a local project on chat.dev:** the extension discovers the project's local coding sessions, lets the user choose which one is Main, creates the agent, uploads the workspace and every discovered session, and keeps the original local project open as a two-way mirror.
+1. **Continue a local project on chat.dev:** the extension discovers the project's local coding sessions, lets the user choose which one is the Default, creates the agent, uploads the workspace and every discovered session, and keeps the original local project open as a two-way mirror.
 2. **Open an existing agent:** the browser shows the account's agents. Choosing one returns to the editor, which replaces the current workspace with the agent's remote filesystem. The user opens a coding-agent session with the editor's **Agent** action.
 
-An **agent** owns one machine and one `/workspace` directory. A **session** is one named coding-agent conversation on that machine, with its own harness process, tmux session, terminal, status, and ordered history. Several sessions can edit the same workspace concurrently. A branch starts with a copy of its parent history; runtimes with a native fork operation also inherit the parent runtime context.
+An **agent** owns one machine and one `/workspace` directory. A **session** is one named coding-agent conversation on that machine, with its own harness process, tmux session, terminal, status, and ordered history. Several sessions can edit the same workspace concurrently. Session identity is a column on the existing conversation events, projections, subscriptions, replies, and channel state; there is no separate session transcript pipeline. A branch starts with a copy of its parent's Simplify history, while an independent session starts empty. Runtimes with a native fork operation also inherit the parent runtime context.
 
-An agent always has a Main session. Its session ID equals the agent ID so older clients continue to address the original conversation without a separate lookup.
+An agent always has a Default session. Its session ID equals the agent ID so older clients continue to address the original conversation without a separate lookup.
 
 ## Components
 
@@ -21,7 +21,7 @@ An agent always has a Main session. Its session ID equals the agent ID so older 
 | --- | --- |
 | VS Code/Cursor extension | Find local sessions, show continuation settings, upload files, handle browser callbacks, and implement the virtual filesystem and terminals |
 | chat.dev web app | Complete editor sign-in and show the account-aware agent picker |
-| chat.dev REST API | Sign the editor in, coordinate browser handoffs, manage agents and sessions, store exact histories, and save account-wide provider credentials |
+| chat.dev REST API | Sign the editor in, coordinate browser handoffs, manage agents and sessions, project session-specific histories from the canonical conversation log, and save account-wide provider credentials |
 | chat.dev Socket.IO gateway | Carry file, session-terminal, upload, and session-handoff messages between the extension and worker |
 | Agent worker | Own `/workspace` and run one isolated harness/tmux pair for every active session |
 
@@ -50,9 +50,9 @@ sequenceDiagram
     opt Logins for this agent only
         E->>A: POST /api/credentials/agents/:id/import-provider
     end
-    E->>A: PATCH Main session and POST remaining sessions
+    E->>A: PATCH Default session and POST remaining sessions
     E->>A: POST /api/agents/:id/start
-    A->>W: Start machine and Main harness with imported login
+    A->>W: Start machine and Default harness with imported login
     E->>A: GET /api/agents/:id until running
 
     E->>A: GET /api/auth/socket-token
@@ -102,11 +102,11 @@ Base URL: `https://api.chat.dev`
 | `POST` | `/api/agents/:agentId/sessions/:sessionId/start` | Start a stopped session |
 | `POST` | `/api/agents/:agentId/sessions/:sessionId/stop` | End a session's current harness process without deleting its history |
 | `POST` | `/api/agents/:agentId/sessions/:sessionId/restart` | Restart one session's harness process |
-| `DELETE` | `/api/agents/:agentId/sessions/:sessionId` | Delete a non-Main session and its history |
-| `GET` | `/api/agents/:agentId/sessions/:sessionId/messages` | Read exact ordered user and agent messages for one session |
+| `DELETE` | `/api/agents/:agentId/sessions/:sessionId` | Delete a non-Default session and its history |
+| `GET` | `/api/agents/:agentId/sessions/:sessionId/messages` | Read ordered Simplify messages for one session |
 | `POST` | `/api/agents/:agentId/sessions/:sessionId/messages` | Send a prompt to one session |
 | `POST` | `/api/agents/:agentId/sessions/:sessionId/messages/:messageId/branch` | Replace one user prompt in a new child branch |
-| `POST` | `/api/agents/:agentId/sessions/:sessionId/import-messages` | Import exact editor history into one session |
+| `POST` | `/api/agents/:agentId/sessions/:sessionId/import-messages` | Import editor history into one session's canonical log |
 | `POST` | `/api/credentials/import-provider` | Save provider values for compatible agents on the account |
 | `POST` | `/api/credentials/agents/:agentId/import-provider` | Store provider values on a stopped destination before its first start |
 | `GET` | `/api/editor/language-models` | Return chat.dev models for VS Code's built-in chat model picker |
@@ -206,7 +206,7 @@ The response includes a browser URL:
 
 An Open request only needs `{ "kind": "open", "callbackUri": "vscode://chatdev.chatdev-remote/open" }`. Its browser URL points to `/connect/editor/agents`.
 
-`GET /api/editor-handoffs/:token` returns the project, sessions, selected agent, whether that agent still exists (`agentAvailable`), Main session ID, credential scope, status, progress message, error, and expiry. Both the editor access token and the signed-in browser session can read the same record for the same account.
+`GET /api/editor-handoffs/:token` returns the project, sessions, selected agent, whether that agent still exists (`agentAvailable`), Default session ID, credential scope, status, progress message, error, and expiry. Both the editor access token and the signed-in browser session can read the same record for the same account.
 
 ### 5. Complete or retry a browser handoff
 
@@ -216,14 +216,14 @@ An older browser-led Continue form calls:
 POST /api/editor-handoffs/:token/complete
 {
   "agentId": "agent-id",
-  "mainSessionId": "conversation-id",
+  "defaultSessionId": "conversation-id",
   "credentialScope": "global"
 }
 ```
 
-The extension polls the handoff, sees the selected agent and Main session, and starts the transfer of every discovered session. It reports `uploading`, `complete`, or `failed` to `/progress` with a browser-readable message. `/retry` first verifies that the old agent still exists, then changes a failed transfer to `retry_requested` and returns a `vscode://` or `cursor://` callback that wakes the extension.
+The extension polls the handoff, sees the selected agent and Default session, and starts the transfer of every discovered session. It reports `uploading`, `complete`, or `failed` to `/progress` with a browser-readable message. `/retry` first verifies that the old agent still exists, then changes a failed transfer to `retry_requested` and returns a `vscode://` or `cursor://` callback that wakes the extension.
 
-`POST /api/editor-handoffs/:token/replace-agent` is the explicit recovery path when the user wants a different machine or the previous agent was deleted. It clears `agentId`, `mainSessionId`, the old error, and the selected credential scope without discarding the local project or session list. It returns `{ "browserUrl": ".../agents/new?editorHandoff=..." }`; completing that form attaches the new agent to the same handoff. `conversationId` remains accepted as an older-client alias for `mainSessionId`.
+`POST /api/editor-handoffs/:token/replace-agent` is the explicit recovery path when the user wants a different machine or the previous agent was deleted. It clears `agentId`, `defaultSessionId`, the old error, and the selected credential scope without discarding the local project or session list. It returns `{ "browserUrl": ".../agents/new?editorHandoff=..." }`; completing that form attaches the new agent to the same handoff. `mainSessionId` and `conversationId` remain accepted as older-client aliases for `defaultSessionId`.
 
 For Open, the browser calls `/select-agent` with `{ "agentId": "agent-id" }`. The returned callback opens the agent's workspace in the current editor window. The user opens the coding-agent CLI explicitly with **Agent**.
 
@@ -400,11 +400,11 @@ Supported response events:
 
 The extension should send VS Code cancellation to this request using `AbortController`.
 
-### 10. Read and import the Main transcript
+### 10. Read and import the Default conversation
 
 `GET /api/chat/:agentId/messages?limit=200`
 
-This compatibility endpoint returns projected conversation rows for the Main session. New clients should use the exact session-history endpoint in the next section.
+This compatibility endpoint returns projected Simplify rows for the Default session. New clients should use the session-specific endpoint in the next section.
 
 ```json
 {
@@ -436,15 +436,15 @@ After a Codex or Claude Code session file is uploaded, or after a Cursor chat is
 }
 ```
 
-Return:
+Return the number of newly appended messages and messages already present under the same source identity:
 
 ```json
-{ "imported": 2 }
+{ "imported": 2, "replayed": 0 }
 ```
 
 ### 11. Manage sessions in one workspace
 
-`GET /api/agents/:agentId/sessions` returns every session on the machine. Main appears first.
+`GET /api/agents/:agentId/sessions` returns every session on the machine. Default appears first.
 
 ```json
 {
@@ -452,15 +452,15 @@ Return:
     {
       "id": "agent-id",
       "agentId": "agent-id",
-      "name": "Main",
+      "name": "Default",
       "runtime": "cursor-agent-tmux",
       "model": "gpt-5.6",
       "status": "running",
-      "isMain": true,
+      "isDefault": true,
       "parentSessionId": null,
       "forkedFromMessageId": null,
       "forkThroughRuntimeTurnId": null,
-      "branchKind": "main",
+      "branchKind": "default",
       "createdAt": "2026-07-15T18:00:00.000Z",
       "updatedAt": "2026-07-15T18:04:00.000Z"
     }
@@ -486,7 +486,7 @@ Content-Type: application/json
 { "name": "Keep the SQLite design", "parentSessionId": "parent-session-id", "start": true }
 ```
 
-The server copies the parent's ordered history before returning the branch. Codex uses its app-server `thread/fork` method, Claude Code uses `--fork-session`, and OpenCode uses its session fork endpoint. Cursor Agent and runtimes without a native fork receive the copied history as context on their first turn and then keep a separate durable session.
+The server copies the parent's Simplify history before returning the branch. It does not copy that history when creating an independent session. Codex uses its app-server `thread/fork` method, Claude Code uses `--fork-session`, and OpenCode uses its session fork endpoint. Cursor Agent and runtimes without a native fork receive the copied history as context on their first turn and then keep a separate durable session.
 
 Edit an earlier user prompt without changing its existing branch:
 
@@ -509,9 +509,9 @@ POST   /api/agents/:agentId/sessions/:sessionId/restart
 DELETE /api/agents/:agentId/sessions/:sessionId
 ```
 
-The agent Start and Stop controls operate on the whole machine. Machine Stop pauses every active session without changing which sessions are active, and Machine Start reopens that active set. Ending a non-Main session stops only its harness/tmux pair and keeps its history; Resume starts that pair again. Main follows the machine lifecycle and cannot be ended or deleted separately. A session with child branches cannot be deleted until its children are deleted.
+The agent Start and Stop controls operate on the whole machine. Machine Stop pauses every active session without changing which sessions are active, and Machine Start reopens that active set. Ending a non-Default session stops only its harness/tmux pair and keeps its history; Resume starts that pair again. Default follows the machine lifecycle and cannot be ended or deleted separately. A session with child branches cannot be deleted until its children are deleted.
 
-Read one exact history page:
+Read one ordered Simplify history page:
 
 ```http
 GET /api/agents/agent-id/sessions/session-id/messages?limit=100&beforeId=500
@@ -539,9 +539,9 @@ GET /api/agents/agent-id/sessions/session-id/messages?limit=100&beforeId=500
 }
 ```
 
-`POST /api/agents/:agentId/sessions/:sessionId/messages` accepts `{ "message": "...", "clientMessageId": "stable-send-id" }`, records the user turn before dispatch, starts the machine or selected session when needed, and routes the prompt only to that harness. Clients reuse `clientMessageId` when retrying the same send so the exact session log retains one user row.
+`POST /api/agents/:agentId/sessions/:sessionId/messages` accepts `{ "message": "...", "clientMessageId": "stable-send-id" }`, records the user turn before dispatch, starts the machine or selected session when needed, and routes the prompt only to that harness. Clients reuse `clientMessageId` when retrying the same send so the canonical session log retains one user row.
 
-`POST /api/agents/:agentId/sessions/:sessionId/import-messages` accepts the same `provider`, source `sessionId`, and `messages` body as the Main compatibility importer. Import keys include provider, source session, position, and role, so polling the same local transcript updates history without duplicating it. A Cursor import also refreshes that session's context file. It does not place the source editor ID into Cursor CLI storage.
+`POST /api/agents/:agentId/sessions/:sessionId/import-messages` accepts the same `provider`, source `sessionId`, and `messages` body as the Default compatibility importer. The importer appends to the canonical session-scoped event log. Stable source identities make replay inert without collapsing two intentional messages that happen to contain the same text. A Cursor import also refreshes that session's context file. It does not place the source editor ID into Cursor CLI storage.
 
 ### Text, calls, and agent tools
 
@@ -549,7 +549,7 @@ Every message route resolves one explicit session before dispatch:
 
 - Direct texts remember an agent and session per SMS conversation. `/sessions` lists choices and `/session NAME` changes only that text conversation's target.
 - A browser call starts on the session selected in the agent page. Voice tools accept `sessionName`, can list and rename sessions, and keep the current agent/session pair while the call continues.
-- Agent-to-agent send, read, status, and wait tools accept `sessionId` or exact `sessionName`. Omitting both means Main.
+- Agent-to-agent send, read, status, and wait tools accept `sessionId` or exact `sessionName`. Omitting both means Default.
 - Session creation, branch, rename, resume, end, and delete tools always require an agent and explicit session identifiers where applicable.
 
 Completion delivery is keyed by both agent ID and session ID. A response from one session cannot consume the pending reply for another session on the same machine.
@@ -610,7 +610,7 @@ These events connect the VS Code terminal to the actual coding-agent interface o
 | `scrollback` / `scrollback_chunk` | Server → extension | Send stored output tagged with both IDs |
 | `session_terminal_ready` | Server → extension | Report that a session's coding-agent TUI is ready |
 | `session_status` | Server → extension | Report `starting`, `running`, `stopped`, or `errored` |
-| `session_message` | Server → extension | Send the complete inserted or updated exact-history row |
+| `session_message` | Server → extension | Send the complete inserted or updated Simplify row |
 
 Older clients may continue listening for `terminal_ready`, `thread_status`, and `thread_message`; the server emits those aliases with the same payload while the session API is adopted.
 
@@ -667,11 +667,11 @@ The extension imports the visible transcript through the target session's `impor
 }
 ```
 
-The chunks contain a normalized Markdown rendering of the visible Cursor conversation. The worker writes it under `/workspace/.chatdev/sessions/<sessionId>/`. The extension separately imports the same user/assistant turns into that chat.dev session's exact ordered history and keeps importing newly appended local turns idempotently. When a local transcript changes, the extension also rewrites that session's remote context file through `write_file`.
+The chunks contain a normalized Markdown rendering of the visible Cursor conversation. The worker writes it under `/workspace/.chatdev/sessions/<sessionId>/`. The extension separately imports the same user/assistant turns into that chat.dev session's canonical event log and keeps importing newly appended local turns idempotently. When a local transcript changes, the extension also rewrites that session's remote context file through `write_file`.
 
 The source Cursor editor ID is correlation metadata only. The worker never passes it to `cursor-agent --resume`, because Cursor's editor and CLI use different session stores.
 
-For `cursor-agent-tmux`, the worker creates one durable remote Cursor Agent session and opens it with the interactive `cursor-agent` TUI. The extension does not rewrite Cursor's editor database. The imported Markdown transcript remains available for chat.dev's exact history projection and as context for the remote session and Codex fallback.
+For `cursor-agent-tmux`, the worker creates one durable remote Cursor Agent session and opens it with the interactive `cursor-agent` TUI. The extension does not rewrite Cursor's editor database. The imported Markdown transcript remains available for chat.dev's Simplify projection and as context for the remote session and Codex fallback.
 
 The visible terminal runs `cursor-agent --force --resume <id>`. Simplify sends its prompt to that same TUI process instead of starting a second Cursor CLI. A transcript watcher publishes the ordered user and assistant turns produced by either input surface through the normal chat.dev session stream. The worker caps runtime diagnostics before storing them so a CLI exception cannot turn one bundled source line into a multi-megabyte chat message.
 
@@ -711,11 +711,11 @@ The extension then starts the agent. The login is present when the first harness
 
 - [x] Editor sign-in endpoints
 - [x] Browser handoff create, read, select, complete, progress, retry, and replace-agent endpoints
-- [x] In-editor Main-session selector and transfer progress form
+- [x] In-editor Default-session selector and transfer progress form
 - [x] Browser agent picker with VS Code and Cursor callbacks
 - [x] Agent list, read, create, start, and delete endpoints
 - [x] Agent session list, create, branch, edited-message branch, rename, resume, end, and delete endpoints
-- [x] Exact per-session ordered history and prompt endpoint
+- [x] Session-specific canonical log, Simplify history, and prompt endpoint
 - [x] Separate harness, tmux session, terminal stream, and durable runtime state per session
 - [x] Native Codex, Claude Code, and OpenCode forks with shared-workspace session isolation
 - [x] Explicit session targeting for SMS, calls, and agent-to-agent tools

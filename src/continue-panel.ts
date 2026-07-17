@@ -23,7 +23,9 @@ export type ContinuePanelMachineTier = {
 };
 
 export type ContinuePanelSettings = {
-  mainSessionId: string;
+  defaultSessionId: string;
+  /** Compatibility with unfinished transfers saved by v0.1.0. */
+  mainSessionId?: string;
   name: string;
   machineSize: "standard" | "pro" | "max" | "gpu";
   volumeGb?: number;
@@ -180,7 +182,7 @@ function renderPanel(cspSource: string, options: PanelOptions): string {
     <form id="form">
       <section>
         <div class="grid">
-          <div class="field wide"><label for="conversation">Main session</label><select id="conversation"></select><div class="hint" id="conversation-meta"></div><div class="hint">All ${options.conversations.length} local session${options.conversations.length === 1 ? "" : "s"} will be transferred. New messages normally go to the Main session.</div></div>
+          <div class="field wide"><label for="conversation">Default session</label><select id="conversation"></select><div class="hint" id="conversation-meta"></div><div class="hint">All ${options.conversations.length} local session${options.conversations.length === 1 ? "" : "s"} will be transferred. New messages normally go to the Default session.</div></div>
           <div class="field"><label for="name">Agent name</label><input id="name" maxlength="100" required pattern="[a-zA-Z0-9_.\\/-]+"></div>
           <div class="field"><label for="model">Model</label><input id="model" maxlength="200" placeholder="Use the conversation default"></div>
         </div>
@@ -276,7 +278,8 @@ function renderPanel(cspSource: string, options: PanelOptions): string {
         disk.value = String(defaults[input.value]);
       }
     }));
-    if (initial.mainSessionId && options.conversations.some((item) => item.id === initial.mainSessionId)) conversation.value = initial.mainSessionId;
+    const initialSessionId = initial.defaultSessionId || initial.mainSessionId;
+    if (initialSessionId && options.conversations.some((item) => item.id === initialSessionId)) conversation.value = initialSessionId;
     updateConversation();
     const selectedMachine = document.querySelector('input[name="machine"]:checked');
     disk.min = String(defaults[selectedMachine.value] || 1);
@@ -294,9 +297,9 @@ function renderPanel(cspSource: string, options: PanelOptions): string {
       const item = selectedConversation();
       const machine = document.querySelector('input[name="machine"]:checked');
       const credential = document.querySelector('input[name="credential"]:checked');
-      vscode.setState({ mainSessionId: conversation.value, name: name.value, model: model.value, disk: disk.value, budget: budget.value });
+      vscode.setState({ defaultSessionId: conversation.value, name: name.value, model: model.value, disk: disk.value, budget: budget.value });
       return {
-        mainSessionId: item.id,
+        defaultSessionId: item.id,
         name: name.value.trim(),
         machineSize: machine.value,
         volumeGb: Number(disk.value),

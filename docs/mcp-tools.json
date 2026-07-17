@@ -101,7 +101,7 @@
     },
     {
       "name": "chatdev_manage_session",
-      "description": "Resume, end, restart, or delete one non-Main coding session. Machine lifecycle is managed with the agent tools.",
+      "description": "Resume, end, restart, or delete one non-Default coding session. Machine lifecycle is managed with the agent tools.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -132,7 +132,7 @@
     },
     {
       "name": "chatdev_get_session_messages",
-      "description": "Read exact ordered user and agent messages from one session. Omit the session selector to read Main.",
+      "description": "Read ordered user and agent messages from one session. Omit the session selector to read the Default session.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -148,7 +148,7 @@
     },
     {
       "name": "chatdev_send_session_message",
-      "description": "Send a prompt to one coding session and its harness. Omit the session selector to send to Main.",
+      "description": "Send a prompt to one coding session and its harness. Omit the session selector to send to the Default session.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -217,7 +217,7 @@
     },
     {
       "name": "chatdev_import_chat_messages",
-      "description": "Import exact parsed user and assistant transcript rows into one session.",
+      "description": "Import parsed user and assistant transcript rows into one session's canonical log.",
       "inputSchema": {
         "type": "object",
         "properties": {

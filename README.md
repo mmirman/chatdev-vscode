@@ -51,9 +51,9 @@ See the [full installation guide](docs/INSTALL.md) for updates, uninstalling, an
 
 Open the project used by the local coding agent and click **Continue** in the chat.dev sidebar or its cloud icon in the toolbar.
 
-The New Agent pane opens inside the editor. For Cursor, its session list is scoped to the exact open project and matches active Agent conversations from Cursor's own history store. Choose which session should be **Main**, then set the agent name, machine, disk, model, budget, and local provider login option. Machine cards show their current chat.dev price before you create anything.
+The New Agent pane opens inside the editor. For Cursor, its session list is scoped to the exact open project and matches active Agent conversations from Cursor's own history store. Choose which session should be the **Default**, then set the agent name, machine, disk, model, budget, and local provider login option. Machine cards show their current chat.dev price before you create anything.
 
-![Choose the Main conversation, machine, and provider login in the editor](docs/images/continue.png)
+![Choose the Default conversation, machine, and provider login in the editor](docs/images/continue.png)
 
 Every discovered local session is transferred. Each becomes a named chat.dev session with its own harness, model, terminal, and history on the shared project. When the extension finds local provider credentials, the same form lets you make them available to all chat.dev agents, install them only on this agent, or use the provider connection already on chat.dev.
 
@@ -92,12 +92,12 @@ After **Continue**, the open local project mirrors the agent's workspace:
 
 Open VS Code's Chat view and use its model picker to choose **chat.dev**. The extension lists the same coding models available through chat.dev, streams responses into the normal Chat interface, and supports editor tools and images. A saved provider key is used when the account has one; otherwise supported models use chat.dev platform credits. You can also type `@chatdev` in Chat; it switches that request to a chat.dev model even when another vendor is selected and can run the editor tools available to that chat.
 
-VS Code saves those conversations in its normal **Chat sessions** list. They stay ordinary VS Code Chat sessions, including forks and history managed by VS Code. **Continue** is for resumable coding-agent sessions created by Codex, Claude Code, or Cursor; it does not relabel a Copilot Chat transcript as a coding-agent session. In Cursor, use **Cursor Agent** for the shared native conversation or **Terminal** for the actual remote CLI. In VS Code, **Agent** opens the remote CLI and lets you choose among Main, independent sessions, and branches.
+VS Code saves those conversations in its normal **Chat sessions** list. They stay ordinary VS Code Chat sessions, including forks and history managed by VS Code. **Continue** is for resumable coding-agent sessions created by Codex, Claude Code, or Cursor; it does not relabel a Copilot Chat transcript as a coding-agent session. In Cursor, use **Cursor Agent** for the shared native conversation or **Terminal** for the actual remote CLI. In VS Code, **Agent** opens the remote CLI and lets you choose among the Default, independent sessions, and branches.
 
 ## What Continue does
 
 1. **Click Continue.** The extension finds Codex, Claude Code, and Cursor conversations associated with the exact open project and opens its New Agent pane in the editor.
-2. **Choose in the editor.** Select the Main session, machine, disk, model, budget, and provider login, then click **Create new agent**. Its browser page opens while setup continues.
+2. **Choose in the editor.** Select the Default session, machine, disk, model, budget, and provider login, then click **Create new agent**. Its browser page opens while setup continues.
 3. **Keep working.** The complete project archive, Git data, every discovered session, and the selected agent settings become available together. The current project stays open and becomes a live two-way mirror of the chat.dev workspace.
 
 The shortcuts are `Ctrl+Alt+Shift+C` and `Ctrl+Alt+Shift+O` on Windows/Linux or `Cmd+Alt+Shift+C` and `Cmd+Alt+Shift+O` on macOS.

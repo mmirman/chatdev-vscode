@@ -132,7 +132,7 @@ export async function continueCurrentProjectInBrowser(api: ChatDevApi): Promise<
       const state = await api.getEditorHandoff(handoff.token);
       if (state.status === "complete") return;
       if (state.status === "failed") throw new Error(continuationFailureMessage(state.error || "The project connection stopped."));
-      if (state.agentId && (state.mainSessionId || state.conversationId) && ["selected", "retry_requested"].includes(state.status)) {
+      if (state.agentId && handoffDefaultSessionId(state) && ["selected", "retry_requested"].includes(state.status)) {
         await transferBrowserHandoff(api, handoff.token, state, folder.uri, sessions, progress);
         return;
       }
@@ -210,7 +210,7 @@ export async function continueCursorSessionInBrowser(
         throw new Error("The completed project connection did not include this Cursor conversation.");
       }
       if (state.status === "failed") throw new Error(continuationFailureMessage(state.error || "The project connection stopped."));
-      if (state.agentId && (state.mainSessionId || state.conversationId) && ["selected", "retry_requested"].includes(state.status)) {
+      if (state.agentId && handoffDefaultSessionId(state) && ["selected", "retry_requested"].includes(state.status)) {
         const result = await transferBrowserHandoff(api, handoff.token, state, folder.uri, sessions, progress);
         const remote = result.remoteSessions.find(({ local }) => local.provider === "cursor" && local.sessionId === cursorSessionId);
         if (!remote) throw new Error("The new Cursor conversation was not attached to the chat.dev agent.");
@@ -252,7 +252,7 @@ export async function handleEditorCallback(api: ChatDevApi, uri: vscode.Uri): Pr
 export async function resumeBrowserHandoff(api: ChatDevApi, token: string, existing?: EditorHandoff): Promise<void> {
   if (activeBrowserTransfers.has(token)) return;
   const handoff = existing || await api.getEditorHandoff(token);
-  if (!handoff.agentId || !(handoff.mainSessionId || handoff.conversationId) || !handoff.projectPath) {
+  if (!handoff.agentId || !handoffDefaultSessionId(handoff) || !handoff.projectPath) {
     throw new Error("The project connection is not ready yet.");
   }
   const folder = vscode.Uri.file(handoff.projectPath);
@@ -276,9 +276,9 @@ async function transferBrowserHandoff(
   activeBrowserTransfers.add(token);
   try {
     sessions = mergeCurrentSessions(sessions, await discoverLocalSessions(folder));
-    const mainSessionId = handoff.mainSessionId || handoff.conversationId!;
-    const mainSession = sessions.find((item) => item.sessionId === mainSessionId);
-    if (!mainSession) throw new Error("The selected Main session is no longer available in this editor.");
+    const defaultSessionId = handoffDefaultSessionId(handoff)!;
+    const defaultSession = sessions.find((item) => item.sessionId === defaultSessionId);
+    if (!defaultSession) throw new Error("The selected Default session is no longer available in this editor.");
     let agent = await api.getAgent(handoff.agentId!);
     const credentialsByProvider = await findCredentialsForSessions(sessions);
 
@@ -288,7 +288,7 @@ async function transferBrowserHandoff(
       api,
       agent,
       sessions,
-      mainSession,
+      defaultSession,
       credentialsByProvider,
       handoff.credentialScope,
       agent.model || undefined,
@@ -347,6 +347,14 @@ function editorCallbackUri(path: "continue" | "open"): string {
   }).toString(true);
 }
 
+function handoffDefaultSessionId(handoff: EditorHandoff): string | undefined {
+  return handoff.defaultSessionId || handoff.mainSessionId || handoff.conversationId || undefined;
+}
+
+function continuationDefaultSessionId(settings: ContinuePanelSettings): string {
+  return settings.defaultSessionId || settings.mainSessionId || "";
+}
+
 async function chooseLocalProject(): Promise<vscode.WorkspaceFolder | undefined> {
   const localFolders = (vscode.workspace.workspaceFolders || []).filter((folder) => folder.uri.scheme === "file");
   if (!localFolders.length) throw new Error("Open the project you want to continue on chat.dev first.");
@@ -395,8 +403,8 @@ export function currentAgentId(): string | undefined {
 }
 
 function validateContinueSettings(settings: ContinuePanelSettings, sessions: LocalAgentSession[], machineTiers: ContinuePanelMachineTier[]): void {
-  if (!sessions.some((session) => session.sessionId === settings.mainSessionId)) {
-    throw new Error("Choose a Main session from this project.");
+  if (!sessions.some((session) => session.sessionId === continuationDefaultSessionId(settings))) {
+    throw new Error("Choose a Default session from this project.");
   }
   if (!settings.name || settings.name.length > 100 || !/^[a-zA-Z0-9_.\/-]+$/.test(settings.name)) {
     throw new Error("Agent names can use letters, numbers, underscores, dashes, dots, and slashes.");
@@ -429,13 +437,13 @@ async function prepareRemoteContinuation(
   existingAgent?: Agent,
   agentReady?: (agent: Agent) => void | Promise<void>,
 ): Promise<Agent> {
-  const mainSession = sessions.find((session) => session.sessionId === settings.mainSessionId)!;
+  const defaultSession = sessions.find((session) => session.sessionId === continuationDefaultSessionId(settings))!;
   const credentialScope = hasAnyCredentials(credentialsByProvider) ? settings.credentialScope : "none";
   const desiredRuntime = remoteRuntimeForSession(
-    mainSession,
-    credentialScope === "none" ? undefined : credentialsByProvider.get(mainSession.provider),
+    defaultSession,
+    credentialScope === "none" ? undefined : credentialsByProvider.get(defaultSession.provider),
   );
-  const desiredModel = settings.model || mainSession.model;
+  const desiredModel = settings.model || defaultSession.model;
   const desiredAgent = {
     name: settings.name,
     agentRuntime: desiredRuntime,
@@ -481,7 +489,7 @@ async function prepareRemoteContinuation(
 
   await report("Preparing provider logins before startup");
   await installCredentials(api, agent, credentialsByProvider, credentialScope);
-  const remoteSessions = await createRemoteSessions(api, agent, sessions, mainSession, credentialsByProvider, credentialScope, settings.model);
+  const remoteSessions = await createRemoteSessions(api, agent, sessions, defaultSession, credentialsByProvider, credentialScope, settings.model);
   await importSessionHistories(api, agent, remoteSessions, report);
   await report("Starting the agent");
   await ensureRunning(api, agent);
@@ -548,29 +556,29 @@ async function createRemoteSessions(
   api: ChatDevApi,
   agent: Agent,
   sessions: LocalAgentSession[],
-  mainSession: LocalAgentSession,
+  defaultSession: LocalAgentSession,
   credentialsByProvider: Map<LocalAgentSession["provider"], LocalProviderCredentials>,
   credentialScope: "global" | "agent" | "none",
-  mainModelOverride?: string,
-  mainRuntimeOverride?: string,
+  defaultModelOverride?: string,
+  defaultRuntimeOverride?: string,
 ): Promise<RemoteSession[]> {
   const runtimeFor = (session: LocalAgentSession) => remoteRuntimeForSession(
     session,
     credentialScope === "none" ? undefined : credentialsByProvider.get(session.provider),
   );
-  const main = await api.updateAgentThread(agent.id, agent.id, {
-    name: mainSession.title,
-    runtime: mainRuntimeOverride || runtimeFor(mainSession),
-    model: mainModelOverride || mainSession.model || null,
-    sourceProvider: mainSession.provider,
-    sourceSessionId: mainSession.sessionId,
+  const defaultRemoteSession = await api.updateAgentThread(agent.id, agent.id, {
+    name: defaultSession.title,
+    runtime: defaultRuntimeOverride || runtimeFor(defaultSession),
+    model: defaultModelOverride || defaultSession.model || null,
+    sourceProvider: defaultSession.provider,
+    sourceSessionId: defaultSession.sessionId,
   });
   const existing = await api.listAgentThreads(agent);
-  const linked: RemoteSession[] = [{ local: mainSession, remote: main }];
+  const linked: RemoteSession[] = [{ local: defaultSession, remote: defaultRemoteSession }];
   for (const local of sessions) {
-    if (local.sessionId === mainSession.sessionId && local.provider === mainSession.provider) continue;
+    if (local.sessionId === defaultSession.sessionId && local.provider === defaultSession.provider) continue;
     const matched = existing.find((remote) => (
-      !remote.isPrimary
+      !remote.isDefault
       && remote.sourceProvider === local.provider
       && remote.sourceSessionId === local.sessionId
     ));
@@ -845,7 +853,7 @@ async function loadPendingContinuation(
   const stored = api.globalState.get<PendingContinuation[]>(PENDING_CONTINUATIONS_KEY, []);
   const pending = stored.find((item) => item.serverUrl === api.serverUrl && item.workspacePath === workspacePath);
   if (!pending) return undefined;
-  if (!sessions.some((session) => session.sessionId === pending.settings.mainSessionId)) {
+  if (!sessions.some((session) => session.sessionId === continuationDefaultSessionId(pending.settings))) {
     await clearPendingContinuation(api, workspacePath, pending.agentId);
     return undefined;
   }

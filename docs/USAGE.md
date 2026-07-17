@@ -7,13 +7,13 @@ Open the exact project used by your local Codex, Claude Code, or Cursor conversa
 1. Click the chat.dev `>_` icon on the left side of VS Code or Cursor.
 2. Click **Continue**, or click the cloud icon in the chat.dev toolbar.
 3. The New Agent pane opens inside the editor with the project and local sessions already attached.
-4. Choose which local AI session should be **Main**. Every session shown in the list will be transferred.
+4. Choose which local AI session should be the **Default**. Every session shown in the list will be transferred.
 5. Choose the machine, model, disk, budget, and provider login option. Each machine shows its current monthly price and included disk.
 6. Click **Create New Agent**. The agent page opens in your browser immediately while the editor shows live setup and transfer progress. Keep the editor open until it finishes.
 
 ![The chat.dev panel with Continue and Open actions](images/panel.png)
 
-![Choose the Main local AI conversation, machine, and provider login in the editor](images/continue.png)
+![Choose the Default local AI conversation, machine, and provider login in the editor](images/continue.png)
 
 Each local history entry becomes a separate chat.dev session on the same machine and workspace. Codex sessions continue with Codex and Claude Code sessions continue with Claude Code. A Cursor session uses a persistent remote Cursor Agent when the extension finds a Cursor login or API key. Without one, it uses Codex with chat.dev credits. Both receive the visible Cursor history as prior context.
 

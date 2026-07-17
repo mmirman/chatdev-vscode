@@ -178,15 +178,23 @@ paths:
           application/json:
             schema:
               type: object
-              required: [agentId, mainSessionId, credentialScope]
+              required: [agentId, credentialScope]
               properties:
                 agentId: { type: string }
-                mainSessionId: { type: string }
+                defaultSessionId: { type: string }
+                mainSessionId:
+                  type: string
+                  deprecated: true
+                  description: Older-client alias for defaultSessionId
                 conversationId:
                   type: string
                   deprecated: true
-                  description: Older-client alias for mainSessionId
+                  description: Older-client alias for defaultSessionId
                 credentialScope: { enum: [global, agent, none] }
+              anyOf:
+                - required: [defaultSessionId]
+                - required: [mainSessionId]
+                - required: [conversationId]
       responses:
         "200": { description: Browser selection recorded }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -361,7 +369,7 @@ paths:
       operationId: listAgentSessions
       responses:
         "200":
-          description: Session list, with Main first
+          description: Session list, with Default first
           content:
             application/json:
               schema:
@@ -417,7 +425,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
     delete:
-      summary: Delete a non-Main session and its history
+      summary: Delete a non-Default session and its history
       operationId: deleteAgentSession
       responses:
         "200":
@@ -791,7 +799,7 @@ components:
         machineSize: { type: string }
     AgentSession:
       type: object
-      required: [id, agentId, name, runtime, status, isMain, parentSessionId, forkedFromMessageId, forkThroughRuntimeTurnId, branchKind, createdAt, updatedAt]
+      required: [id, agentId, name, runtime, status, isDefault, parentSessionId, forkedFromMessageId, forkThroughRuntimeTurnId, branchKind, createdAt, updatedAt]
       properties:
         id: { type: string }
         agentId: { type: string }
@@ -799,15 +807,21 @@ components:
         runtime: { type: string }
         model: { type: [string, "null"] }
         status: { enum: [starting, running, stopped, errored] }
-        isMain: { type: boolean }
+        isDefault: { type: boolean }
+        isMain:
+          type: boolean
+          deprecated: true
+          description: Older-client alias for isDefault
         isPrimary:
           type: boolean
           deprecated: true
-          description: Older-client alias for isMain
+          description: Older-client alias for isDefault
         parentSessionId: { type: [string, "null"] }
         forkedFromMessageId: { type: [integer, "null"] }
         forkThroughRuntimeTurnId: { type: [string, "null"] }
-        branchKind: { enum: [main, new, branch, edit, import] }
+        branchKind:
+          enum: [default, main, new, branch, edit, import]
+          description: "main is an older-client alias for default"
         sourceProvider: { type: [string, "null"] }
         sourceSessionId: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
@@ -903,8 +917,15 @@ components:
           items: { $ref: "#/components/schemas/EditorConversation" }
         status: { enum: [pending, selected, uploading, complete, failed, retry_requested] }
         agentId: { type: [string, "null"] }
-        mainSessionId: { type: [string, "null"] }
-        conversationId: { type: [string, "null"] }
+        defaultSessionId: { type: [string, "null"] }
+        mainSessionId:
+          type: [string, "null"]
+          deprecated: true
+          description: Older-client alias for defaultSessionId
+        conversationId:
+          type: [string, "null"]
+          deprecated: true
+          description: Older-client alias for defaultSessionId
         credentialScope: { enum: [global, agent, none] }
         progressMessage: { type: [string, "null"] }
         error: { type: [string, "null"] }

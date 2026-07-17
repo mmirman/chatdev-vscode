@@ -41,6 +41,8 @@ export type EditorHandoff = {
   status: "pending" | "selected" | "uploading" | "complete" | "failed" | "retry_requested";
   agentId: string | null;
   conversationId: string | null;
+  defaultSessionId?: string | null;
+  /** Compatibility with server builds released before Default terminology. */
   mainSessionId?: string | null;
   credentialScope: "global" | "agent" | "none";
   progressMessage: string | null;
@@ -70,12 +72,14 @@ export type AgentThread = {
   runtime: string;
   model: string | null;
   status: "starting" | "running" | "stopped" | "errored";
-  isPrimary: boolean;
+  isDefault: boolean;
+  /** Compatibility with server builds released before Default terminology. */
+  isPrimary?: boolean;
   isMain?: boolean;
   parentThreadId: string | null;
   forkedFromMessageId: number | null;
   forkThroughRuntimeTurnId: string | null;
-  branchKind: "main" | "new" | "branch" | "edit" | "import";
+  branchKind: "default" | "main" | "new" | "branch" | "edit" | "import";
   sourceProvider?: "codex" | "claude" | "cursor" | null;
   sourceSessionId?: string | null;
 };
@@ -240,27 +244,34 @@ export class ChatDevApi {
     try {
       const result = await this.requestSessionApi<{ sessions?: AgentThread[]; threads?: AgentThread[] }>(`/api/agents/${encodeURIComponent(agent.id)}/sessions`);
       const threads = result.sessions || result.threads || [];
-      return threads.map((thread) => ({
-        ...thread,
-        isPrimary: thread.isMain ?? thread.isPrimary,
-        forkedFromMessageId: thread.forkedFromMessageId ?? null,
-        forkThroughRuntimeTurnId: thread.forkThroughRuntimeTurnId ?? null,
-        branchKind: thread.branchKind || ((thread.isMain ?? thread.isPrimary) ? "main" : thread.parentThreadId ? "branch" : "new"),
-      }));
+      return threads.map((thread) => {
+        const isDefault = thread.isDefault ?? thread.isMain ?? thread.isPrimary;
+        return {
+          ...thread,
+          isDefault,
+          isPrimary: isDefault,
+          forkedFromMessageId: thread.forkedFromMessageId ?? null,
+          forkThroughRuntimeTurnId: thread.forkThroughRuntimeTurnId ?? null,
+          branchKind: thread.branchKind === "main"
+            ? "default"
+            : thread.branchKind || (isDefault ? "default" : thread.parentThreadId ? "branch" : "new"),
+        };
+      });
     } catch (error) {
       if ((error as Error & { status?: number }).status !== 404) throw error;
       return [{
         id: agent.id,
         agentId: agent.id,
-        name: "Main",
+        name: "Default",
         runtime: agent.agentRuntime || "codex-tmux",
         model: null,
         status: (["starting", "running", "errored"].includes(agent.status) ? agent.status : "stopped") as AgentThread["status"],
+        isDefault: true,
         isPrimary: true,
         parentThreadId: null,
         forkedFromMessageId: null,
         forkThroughRuntimeTurnId: null,
-        branchKind: "main",
+        branchKind: "default",
       }];
     }
   }

@@ -239,9 +239,9 @@ async function openAgentTerminal(api: ChatDevApi, selected?: Parameters<typeof o
   const threadNames = new Map(threads.map((item) => [item.id, item.name]));
   const thread = threads.length <= 1 ? threads[0] : await vscode.window.showQuickPick(
     threads.map((item) => ({
-      label: `${item.isPrimary ? "$(home)" : item.branchKind === "new" ? "$(comment-discussion)" : "$(git-branch)"} ${item.name}`,
-      description: item.isPrimary
-        ? `Main · ${item.status}`
+      label: `${item.isDefault ? "$(home)" : item.branchKind === "new" ? "$(comment-discussion)" : "$(git-branch)"} ${item.name}`,
+      description: item.isDefault
+        ? `Default · ${item.status}`
         : item.branchKind === "new"
           ? `Independent · ${item.status}`
           : `${item.branchKind === "edit" ? "Edited" : "Branched"} from ${threadNames.get(item.parentThreadId || "") || "parent"} · ${item.status}`,
@@ -251,7 +251,7 @@ async function openAgentTerminal(api: ChatDevApi, selected?: Parameters<typeof o
     { title: `${agent.name} sessions`, placeHolder: "Choose the coding session to open" },
   ).then((item) => item?.thread);
   if (!thread) return;
-  if (!thread.isPrimary && thread.status !== "running" && thread.status !== "starting") {
+  if (!thread.isDefault && thread.status !== "running" && thread.status !== "starting") {
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
       title: `Resuming ${thread.name}`,

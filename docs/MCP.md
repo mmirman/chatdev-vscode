@@ -37,11 +37,11 @@ flowchart LR
 | `chatdev_create_session` | Create a session or branch with its own harness and model | `POST /api/agents/:agentId/sessions` |
 | `chatdev_update_session` | Change a session's name, harness, or model | `PATCH /api/agents/:agentId/sessions/:sessionId` |
 | `chatdev_branch_from_message` | Edit a user prompt into a new child branch | `POST /api/agents/:agentId/sessions/:sessionId/messages/:messageId/branch` |
-| `chatdev_manage_session` | Resume, end, restart, or delete one non-Main session | Session lifecycle endpoint matching the requested action |
-| `chatdev_get_session_messages` | Read exact ordered history for one session | `GET /api/agents/:agentId/sessions/:sessionId/messages` |
+| `chatdev_manage_session` | Resume, end, restart, or delete one non-Default session | Session lifecycle endpoint matching the requested action |
+| `chatdev_get_session_messages` | Read ordered Simplify history for one session | `GET /api/agents/:agentId/sessions/:sessionId/messages` |
 | `chatdev_send_session_message` | Send a prompt to one session's harness | `POST /api/agents/:agentId/sessions/:sessionId/messages` |
 
-The machine Start/Stop tools control the whole agent machine. Stopping the machine pauses its active sessions, and starting it reopens every session that was not explicitly ended. Session tools control one harness. Send, read, wait, and subscription tools default to Main when neither `sessionId` nor `sessionName` is supplied.
+The machine Start/Stop tools control the whole agent machine. Stopping the machine pauses its active sessions, and starting it reopens every session that was not explicitly ended. Session tools control one harness. Send, read, wait, and subscription tools use the Default session when neither `sessionId` nor `sessionName` is supplied.
 
 ### Workspace
 
@@ -61,7 +61,7 @@ The machine Start/Stop tools control the whole agent machine. Stopping the machi
 | MCP tool | What it does | API call or event |
 | --- | --- | --- |
 | `chatdev_import_session` | Import resumable Codex or Claude Code state, or attach a Cursor editor transcript to a remote session | `session_import_begin/chunk/commit` |
-| `chatdev_import_chat_messages` | Import exact user and assistant rows into one session | `POST /api/agents/:agentId/sessions/:sessionId/import-messages` |
+| `chatdev_import_chat_messages` | Import user and assistant rows into one session's canonical log | `POST /api/agents/:agentId/sessions/:sessionId/import-messages` |
 | `chatdev_save_account_credentials` | Save provider values for compatible agents | `POST /api/credentials/import-provider` |
 | `chatdev_install_agent_credentials` | Install provider values only on one agent | `credential_import` |
 

@@ -50,7 +50,7 @@ export class ActionsViewProvider implements vscode.TreeDataProvider<ActionItem> 
         new ActionItem({
           label: "New",
           description: "Create another agent from this project",
-          tooltip: "Choose a Main local session and machine, then create another chat.dev agent and connect this project to it.",
+          tooltip: "Choose a Default local session and machine, then create another chat.dev agent and connect this project to it.",
           command: "chatdev.moveSession",
           icon: "add",
         }),
@@ -89,7 +89,7 @@ export class ActionsViewProvider implements vscode.TreeDataProvider<ActionItem> 
       new ActionItem({
         label: "Continue",
         description: "Make this project available on chat.dev",
-        tooltip: "Choose the Main local session, machine, and provider login settings, then create the remote agent with every local session.",
+        tooltip: "Choose the Default local session, machine, and provider login settings, then create the remote agent with every local session.",
         command: "chatdev.moveSession",
         icon: "cloud-upload",
       }),
