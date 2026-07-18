@@ -130,7 +130,7 @@ The shortcuts are also shown in the chat.dev tool panel. The machine shell remai
 - Provider credentials when selected
 - Open editor tabs and cursor positions
 
-The initial upload sends one checksummed archive containing every project item, including hidden files, `.git`, empty directories, executable modes, and relative symlinks. Absolute local symlinks are omitted because their targets do not exist at the same path on the agent. Set `chatdev.uploadExcludes` only when you intentionally want to leave out named files or directories.
+The first sync sends each object independently, with directories and smaller files ahead of large files. The chat.dev agent is usable as soon as it starts, and every completed file is usable as soon as it arrives. `.chatdev-sync-manifest.json` reports discovery progress and remains in the agent workspace after the first pass so the final state is explicit. A `filename.chatdev-downloading` sibling contains incomplete bytes; the real filename is installed only after its size and checksum are verified. Hidden files, `.git`, `node_modules`, empty directories, executable modes, and relative in-project symlinks are included. Set `chatdev.uploadExcludes` only when you intentionally want to leave out named files or directories.
 
 ## Troubleshooting
 
@@ -148,7 +148,7 @@ Run **Continue** again from the original local project. Use **Try Again** to fin
 
 ### The transfer is still running
 
-Keep the original project window open until the verified archive upload finishes. The status at the bottom of the Continue form shows the current transfer step.
+You can use the chat.dev agent while project files continue appearing. Keep the original project window open when practical; closing or restarting it is also safe because the extension resumes its durable queue the next time that project opens. The status at the bottom of the Continue form shows the current step. On the agent, open `.chatdev-sync-manifest.json`: `discoveryComplete` records whether the first pass finished, while `status` is `syncing` whenever discovery or a live file transfer is still active. Its `activeDownloads` list and any `.chatdev-downloading` siblings identify interrupted or unfinished files.
 
 ### Cursor Agent is missing
 

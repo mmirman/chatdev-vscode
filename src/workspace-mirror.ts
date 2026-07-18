@@ -1,11 +1,30 @@
-import * as path from "path";
+import { createReadStream, type Dirent } from "fs";
 import * as crypto from "crypto";
+import * as fs from "fs/promises";
+import * as path from "path";
 import * as vscode from "vscode";
 import type { Socket } from "socket.io-client";
 import { ChatDevApi } from "./api";
 import { forgetAgentSessionSyncs } from "./session-sync";
+import {
+  type PendingRemoteWorkspaceChange,
+  type PendingWorkspaceOperation,
+  type PreparedLocalState,
+  type RemoteWorkspaceChange,
+  type RemoteWorkspaceEntry,
+  WorkspaceSyncJournal,
+} from "./workspace-sync-journal";
 
 const STORAGE_KEY = "chatdev.workspaceMirrors";
+const CLIENT_ID_KEY = "chatdev.workspaceSyncClientId";
+const SYNC_MANIFEST = ".chatdev-sync-manifest.json";
+const PARTIAL_SUFFIX = ".chatdev-downloading";
+const INTERNAL_TEMP_PREFIX = ".chatdev-sync-part-";
+const SMALL_FILE_LIMIT = 1024 * 1024;
+const TRANSFER_CHUNK_SIZE = 512 * 1024;
+const OUTBOX_CONCURRENCY = 3;
+const CHANGE_POLL_MS = 2_000;
+const RECONCILE_MS = 5 * 60_000;
 const active = new Map<string, WorkspaceMirror>();
 
 type StoredMirror = {
@@ -14,23 +33,59 @@ type StoredMirror = {
   workspacePath: string;
 };
 
-type RpcResult = { ok: boolean; error?: string; [key: string]: unknown };
+type StartOptions = {
+  initialSync?: boolean;
+  report?: (message: string) => void | Promise<void>;
+};
 
-export async function startWorkspaceMirror(api: ChatDevApi, agentId: string, workspace: vscode.Uri): Promise<void> {
+type RpcResult = {
+  ok: boolean;
+  error?: string;
+  code?: string;
+  generation?: string | null;
+  revision?: string | null;
+  [key: string]: unknown;
+};
+
+type SyncStatus = RpcResult & {
+  generation: string | null;
+  clientId: string | null;
+  phase: "idle" | "syncing" | "live";
+  cursor: number;
+  manifest?: string | null;
+};
+
+type ManifestResult = {
+  entries: Array<{ path: string } & RemoteWorkspaceEntry>;
+  startCursor: number;
+  headCursor: number;
+};
+
+export async function startWorkspaceMirror(
+  api: ChatDevApi,
+  agentId: string,
+  workspace: vscode.Uri,
+  options: StartOptions = {},
+): Promise<void> {
   if (workspace.scheme !== "file") return;
   const workspacePath = path.resolve(workspace.fsPath);
   const key = mirrorKey(api.serverUrl, workspacePath);
   const previous = active.get(key);
-  if (previous?.agentId === agentId) return;
+  if (previous?.agentId === agentId) {
+    if (options.initialSync) await previous.waitUntilReady();
+    return;
+  }
   previous?.dispose();
   const mirror = new WorkspaceMirror(api, agentId, workspace);
   active.set(key, mirror);
   await rememberMirror(api, agentId, workspacePath);
   try {
-    await mirror.start();
+    await mirror.start(options);
   } catch (error) {
-    mirror.dispose();
-    if (active.get(key) === mirror) active.delete(key);
+    if (active.get(key) === mirror) {
+      mirror.dispose();
+      active.delete(key);
+    }
     throw error;
   }
 }
@@ -89,14 +144,22 @@ class WorkspaceMirror implements vscode.Disposable {
   readonly workspacePath: string;
   readonly serverUrl: string;
   private socket: Socket | undefined;
+  private journal!: WorkspaceSyncJournal;
   private watcher: vscode.FileSystemWatcher | undefined;
   private documentSubscription: vscode.Disposable | undefined;
   private readonly documentTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly documentVersions = new Map<string, number>();
-  private readonly suppressed = new Map<string, SuppressedRemoteWrite>();
-  private readonly locallyPushed = new Map<string, { hash: string; until: number }>();
-  private readonly pathQueues = new Map<string, Promise<void>>();
+  private changePoller: ReturnType<typeof setInterval> | undefined;
+  private reconcilePoller: ReturnType<typeof setInterval> | undefined;
+  private readyPromise: Promise<void> | undefined;
+  private outboxPromise: Promise<void> | undefined;
+  private inboundPromise: Promise<void> | undefined;
+  private remoteDrainPromise: Promise<void> | undefined;
+  private reconnectPromise: Promise<void> | undefined;
+  private reconciliationPromise: Promise<void> | undefined;
+  private protocolReady = false;
+  private remoteDrainEnabled = false;
   private disposed = false;
+  private lastConflictNotice = 0;
 
   constructor(
     private readonly api: ChatDevApi,
@@ -107,228 +170,880 @@ class WorkspaceMirror implements vscode.Disposable {
     this.serverUrl = api.serverUrl;
   }
 
-  async start(): Promise<void> {
+  async start(options: StartOptions): Promise<void> {
+    const storedClientId = this.api.globalState.get<string>(CLIENT_ID_KEY);
+    const clientId = storedClientId || `client-${crypto.randomUUID()}`;
+    if (!storedClientId) await this.api.globalState.update(CLIENT_ID_KEY, clientId);
+    this.journal = await WorkspaceSyncJournal.open({
+      storageDirectory: this.api.globalStoragePath,
+      serverUrl: this.serverUrl,
+      agentId: this.agentId,
+      workspacePath: this.workspacePath,
+      clientId,
+    });
     this.socket = await this.api.connectSocket();
-    this.socket.on("fs_change", ({ agentId, paths, originSocketId }: { agentId: string; paths?: string[]; originSocketId?: string }) => {
-      if (agentId !== this.agentId) return;
-      if (originSocketId && originSocketId === this.socket?.id) return;
-      for (const remotePath of paths || []) {
-        if (!remotePath || this.ignored(remotePath)) continue;
-        this.enqueue(remotePath, () => this.pullRemotePath(remotePath));
-      }
-    });
-    this.socket.on("connect", () => this.socket?.emit("join", { agentId: this.agentId }));
-    this.socket.emit("join", { agentId: this.agentId });
+    this.installSocketListeners();
+    this.installLocalListeners();
+    this.readyPromise = this.initializeWithRetry(options);
+    if (options.initialSync) await this.readyPromise;
+    else void this.readyPromise.catch((error) => console.warn("[chat.dev] workspace mirror initialization stopped:", error));
+  }
 
-    this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.root.fsPath, "**/*"));
-    this.watcher.onDidCreate((uri) => this.onLocalChange(uri, false));
-    this.watcher.onDidChange((uri) => this.onLocalChange(uri, false));
-    this.watcher.onDidDelete((uri) => this.onLocalChange(uri, true));
-    this.documentSubscription = vscode.workspace.onDidChangeTextDocument((event) => {
-      this.onLocalDocumentChange(event.document);
-    });
+  waitUntilReady(): Promise<void> {
+    return this.readyPromise || Promise.resolve();
   }
 
   dispose(): void {
     this.disposed = true;
     this.watcher?.dispose();
-    this.watcher = undefined;
     this.documentSubscription?.dispose();
-    this.documentSubscription = undefined;
     for (const timer of this.documentTimers.values()) clearTimeout(timer);
     this.documentTimers.clear();
-    this.documentVersions.clear();
+    if (this.changePoller) clearInterval(this.changePoller);
+    if (this.reconcilePoller) clearInterval(this.reconcilePoller);
     this.socket?.disconnect();
     this.socket = undefined;
-    this.pathQueues.clear();
-    this.suppressed.clear();
-    this.locallyPushed.clear();
   }
 
-  private onLocalChange(uri: vscode.Uri, deleted: boolean): void {
-    const relativePath = this.relativePath(uri);
-    if (!relativePath || this.ignored(relativePath)) return;
-    this.enqueue(relativePath, async () => {
-      if (await this.matchesRemoteWrite(relativePath, uri, deleted)) return;
-      if (deleted) await this.deleteRemotePath(relativePath);
-      else await this.pushLocalPath(relativePath, uri);
+  private installSocketListeners(): void {
+    this.socket!.on("fs_change", ({ agentId }: { agentId: string }) => {
+      if (agentId === this.agentId) this.scheduleRemoteDrain();
+    });
+    this.socket!.on("connect", () => {
+      this.socket?.emit("join", { agentId: this.agentId });
+      if (this.protocolReady) this.scheduleReconnectRecovery();
+    });
+    this.socket!.emit("join", { agentId: this.agentId });
+  }
+
+  private installLocalListeners(): void {
+    this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.root.fsPath, "**/*"));
+    this.watcher.onDidCreate((uri) => { void this.queueLocalUri(uri); });
+    this.watcher.onDidChange((uri) => { void this.queueLocalUri(uri); });
+    this.watcher.onDidDelete((uri) => { void this.queueLocalUri(uri); });
+    this.documentSubscription = vscode.workspace.onDidChangeTextDocument((event) => {
+      const relativePath = this.relativePath(event.document.uri);
+      if (!relativePath || this.ignored(relativePath)) return;
+      const previous = this.documentTimers.get(relativePath);
+      if (previous) clearTimeout(previous);
+      const timer = setTimeout(() => {
+        this.documentTimers.delete(relativePath);
+        const document = vscode.workspace.textDocuments.find((item) => item.uri.toString() === event.document.uri.toString());
+        const inlineData = document && !document.isClosed ? Buffer.from(document.getText(), "utf8") : undefined;
+        void this.queueLocalPath(relativePath, inlineData);
+      }, 120);
+      this.documentTimers.set(relativePath, timer);
     });
   }
 
-  private onLocalDocumentChange(document: vscode.TextDocument): void {
-    if (document.uri.scheme !== "file" || document.isClosed) return;
-    const relativePath = this.relativePath(document.uri);
-    if (!relativePath || this.ignored(relativePath)) return;
-    const contents = Buffer.from(document.getText(), "utf8");
-    const expected = this.suppressed.get(relativePath);
-    if (expected?.kind === "file" && expected.until > Date.now() && expected.hash === hash(contents)) return;
-    const previous = this.documentTimers.get(relativePath);
-    if (previous) clearTimeout(previous);
-    const version = (this.documentVersions.get(relativePath) || 0) + 1;
-    this.documentVersions.set(relativePath, version);
-    const timer = setTimeout(() => {
-      this.documentTimers.delete(relativePath);
-      this.enqueue(relativePath, () => this.pushLocalDocument(relativePath, document, version));
-    }, 120);
-    this.documentTimers.set(relativePath, timer);
+  private async initializeWithRetry(options: StartOptions): Promise<void> {
+    let attempt = 0;
+    while (!this.disposed) {
+      try {
+        await this.initializeProtocol(options);
+        return;
+      } catch (error) {
+        if (isGenerationConflict(error)) {
+          throw error;
+        }
+        attempt += 1;
+        await safeReport(options.report, `Project sync paused; retrying automatically (${errorMessage(error)})`);
+        await delay(Math.min(15_000, 500 * (2 ** Math.min(attempt, 5))));
+      }
+    }
   }
 
-  private enqueue(relativePath: string, operation: () => Promise<void>): void {
-    const previous = this.pathQueues.get(relativePath) || Promise.resolve();
-    const next = previous.catch(() => undefined).then(operation).catch((error) => {
-      console.warn(`[chat.dev] workspace mirror failed for ${relativePath}:`, error);
-    }).finally(() => {
-      if (this.pathQueues.get(relativePath) === next) this.pathQueues.delete(relativePath);
+  private async initializeProtocol(options: StartOptions): Promise<void> {
+    const status = await this.rpc<SyncStatus>("workspace_sync_status", {});
+    let activeStatus = status;
+    let beganGeneration = false;
+    if (!status.generation) {
+      activeStatus = await this.beginGeneration();
+      beganGeneration = true;
+    } else if (status.generation !== this.journal.generation || status.clientId !== this.journal.clientId) {
+      if (!options.initialSync) {
+        throw syncError("workspace_sync_generation_conflict", "This project is connected to a newer editor sync. Continue the project again to move the connection here.");
+      }
+      await this.journal.setGeneration(`generation-${crypto.randomUUID()}`);
+      activeStatus = await this.beginGeneration(status.generation);
+      beganGeneration = true;
+    } else if (status.phase === "syncing") {
+      await this.journal.markSyncing();
+      activeStatus = await this.beginGeneration();
+    } else if (this.journal.phase === "syncing") {
+      await this.journal.markLive(status.cursor);
+    }
+
+    this.protocolReady = true;
+    if (activeStatus.phase === "syncing" || beganGeneration || this.journal.phase === "syncing") {
+      await this.performInitialSync(activeStatus.cursor, options.report);
+    } else {
+      this.remoteDrainEnabled = true;
+      await this.reconcileRemoteManifest();
+      await this.scanLocalWorkspace();
+      this.scheduleOutbox();
+      this.scheduleInbound();
+      this.scheduleRemoteDrain();
+    }
+    this.startPollers();
+  }
+
+  private async beginGeneration(expectedGeneration?: string): Promise<SyncStatus> {
+    return this.rpc<SyncStatus>("workspace_sync_begin", {
+      generation: this.journal.generation,
+      clientId: this.journal.clientId,
+      ...(expectedGeneration ? { expectedGeneration } : {}),
     });
-    this.pathQueues.set(relativePath, next);
   }
 
-  private async pushLocalPath(relativePath: string, uri: vscode.Uri): Promise<void> {
-    if (this.disposed) return;
-    let metadata: vscode.FileStat;
-    try { metadata = await vscode.workspace.fs.stat(uri); }
-    catch { return this.deleteRemotePath(relativePath); }
-    if (metadata.type & vscode.FileType.Directory) {
-      await this.rpc("create_dir", { path: relativePath });
-      return;
+  private startPollers(): void {
+    if (!this.changePoller) {
+      this.changePoller = setInterval(() => this.scheduleRemoteDrain(), CHANGE_POLL_MS);
+      unrefTimer(this.changePoller);
     }
-    if (!(metadata.type & vscode.FileType.File)) return;
-    if (metadata.size > 5 * 1024 * 1024) {
-      await this.api.uploadLocalFile(this.agentId, relativePath, uri.fsPath);
-      return;
-    }
-    const data = await vscode.workspace.fs.readFile(uri);
-    if (this.wasJustPushed(relativePath, data)) return;
-    await this.rpc("write_file", { path: relativePath, dataBase64: Buffer.from(data).toString("base64") });
-    this.rememberLocalPush(relativePath, data);
-  }
-
-  private async pushLocalDocument(relativePath: string, document: vscode.TextDocument, version: number): Promise<void> {
-    if (this.disposed || document.isClosed) return;
-    if (this.documentVersions.get(relativePath) !== version) return;
-    const data = Buffer.from(document.getText(), "utf8");
-    if (data.byteLength > 5 * 1024 * 1024 || this.wasJustPushed(relativePath, data)) return;
-    const expected = this.suppressed.get(relativePath);
-    if (expected?.kind === "file" && expected.until > Date.now() && expected.hash === hash(data)) return;
-    await this.rpc("write_file", { path: relativePath, dataBase64: data.toString("base64") });
-    this.rememberLocalPush(relativePath, data);
-  }
-
-  private async deleteRemotePath(relativePath: string): Promise<void> {
-    const result = await this.rpc("delete_path", { path: relativePath, recursive: true }, true);
-    if (!result.ok && !/not found|no such file/i.test(String(result.error || ""))) {
-      throw new Error(String(result.error || "Could not delete remote path"));
+    if (!this.reconcilePoller) {
+      this.reconcilePoller = setInterval(() => {
+        void this.reconcileRemoteManifest().catch((error) => console.warn("[chat.dev] workspace reconciliation will retry:", error));
+        void this.scanLocalWorkspace().then(() => this.scheduleOutbox()).catch((error) => console.warn("[chat.dev] local reconciliation will retry:", error));
+      }, RECONCILE_MS);
+      unrefTimer(this.reconcilePoller);
     }
   }
 
-  private async pullRemotePath(relativePath: string): Promise<void> {
-    if (this.disposed) return;
-    if (this.documentTimers.has(relativePath)) return;
-    const documentVersion = this.documentVersions.get(relativePath) || 0;
-    const uri = vscode.Uri.joinPath(this.root, ...relativePath.split("/"));
-    const stat = await this.rpc("stat_path", { path: relativePath }, true);
-    if (!stat.ok) {
-      if (/not found|no such file/i.test(String(stat.error || ""))) {
-        this.suppressed.set(relativePath, { kind: "deleted", until: Date.now() + 3_000 });
-        try { await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: false }); } catch {}
+  private async performInitialSync(startCursor: number, report?: (message: string) => void | Promise<void>): Promise<void> {
+    await safeReport(report, `Syncing project files as they are found; ${SYNC_MANIFEST} shows live progress on the chat.dev machine`);
+    const manifestPromise = this.fetchRemoteManifest(startCursor);
+    const scanPromise = this.scanLocalWorkspace(report);
+    const manifest = await manifestPromise;
+    if (this.journal.remoteManifestLoaded) await this.stageRemoteManifest(manifest);
+    else await this.journal.replaceRemoteManifest(manifest.entries, manifest.startCursor);
+    this.remoteDrainEnabled = true;
+    this.scheduleOutbox();
+    const seen = await scanPromise;
+
+    const remoteOnly: RemoteWorkspaceChange[] = [];
+    const pendingRemotePaths = new Set(this.journal.pendingRemoteChanges().map((change) => change.path));
+    for (const entry of manifest.entries) {
+      if (seen.has(entry.path)
+        || this.ignored(entry.path)
+        || this.journal.hasPending(entry.path)
+        || this.journal.isManaged(entry.path)
+        || pendingRemotePaths.has(entry.path)) continue;
+      if (await this.localPathExists(entry.path)) continue;
+      remoteOnly.push(changeFromEntry(entry));
+    }
+    if (remoteOnly.length) await this.journal.stageRemoteMaterializations(remoteOnly);
+    this.scheduleInbound();
+    await this.waitForOutbox();
+    await this.waitForInbound();
+    await this.flushRemoteChanges();
+
+    await safeReport(report, "Checking for edits made while the project was syncing");
+    await this.scanLocalWorkspace();
+    await this.waitForOutbox();
+    await this.waitForInbound();
+    await this.flushRemoteChanges();
+    await this.waitForOutbox();
+    await this.waitForInbound();
+
+    const completed = await this.rpc<SyncStatus>("workspace_sync_complete", {
+      generation: this.journal.generation,
+      clientId: this.journal.clientId,
+      lastLocalVersion: this.journal.lastAppliedVersion,
+      discoveredObjectCount: seen.size,
+    });
+    await this.journal.markLive(this.journal.remoteCursor);
+    await safeReport(report, "Project files are synced; live mirroring is active");
+  }
+
+  private async fetchRemoteManifest(startCursor?: number): Promise<ManifestResult> {
+    const initialStatus = startCursor == null
+      ? await this.rpc<SyncStatus>("workspace_sync_status", {})
+      : undefined;
+    const cursor = startCursor ?? initialStatus!.cursor;
+    const entries: Array<{ path: string } & RemoteWorkspaceEntry> = [];
+    let afterPath = "";
+    let headCursor = cursor;
+    let first = true;
+    while (!this.disposed) {
+      const result = await this.rpc<RpcResult & {
+        entries: Array<{ path: string } & RemoteWorkspaceEntry>;
+        nextPath: string | null;
+        done: boolean;
+        cursor: number;
+      }>("workspace_sync_manifest", { afterPath, limit: 2_000, reconcile: first });
+      entries.push(...result.entries.filter((entry) => !this.ignored(entry.path)));
+      headCursor = Math.max(headCursor, result.cursor);
+      if (result.done || !result.nextPath) break;
+      afterPath = result.nextPath;
+      first = false;
+    }
+    return { entries, startCursor: cursor, headCursor };
+  }
+
+  private async reconcileRemoteManifest(): Promise<void> {
+    if (this.reconciliationPromise) return this.reconciliationPromise;
+    this.reconciliationPromise = this.performRemoteManifestReconciliation().finally(() => {
+      this.reconciliationPromise = undefined;
+    });
+    return this.reconciliationPromise;
+  }
+
+  private async performRemoteManifestReconciliation(): Promise<void> {
+    if (!this.protocolReady || this.disposed) return;
+    const manifest = await this.fetchRemoteManifest();
+    await this.stageRemoteManifest(manifest);
+    this.scheduleInbound();
+    this.scheduleRemoteDrain();
+  }
+
+  private async stageRemoteManifest(manifest: ManifestResult): Promise<void> {
+    const previous = new Map(this.journal.effectiveRemoteEntries().map(({ path: entryPath, ...entry }) => [entryPath, entry]));
+    const next = new Map(manifest.entries.map(({ path: entryPath, ...entry }) => [entryPath, entry]));
+    const changes: RemoteWorkspaceChange[] = [];
+    for (const entryPath of new Set([...previous.keys(), ...next.keys()])) {
+      const before = previous.get(entryPath);
+      const after = next.get(entryPath);
+      if (before?.revision === after?.revision && before?.type === after?.type) continue;
+      changes.push(after ? changeFromEntry({ path: entryPath, ...after }) : deletedChange(entryPath));
+    }
+    await this.journal.stageRemoteChanges(changes, manifest.startCursor);
+  }
+
+  private scheduleReconnectRecovery(): void {
+    if (this.reconnectPromise || this.disposed) return;
+    this.reconnectPromise = (async () => {
+      try {
+        const status = await this.rpc<SyncStatus>("workspace_sync_status", {});
+        if (status.generation !== this.journal.generation || status.clientId !== this.journal.clientId) {
+          throw syncError("workspace_sync_generation_conflict", "Another editor moved this project connection.");
+        }
+        await this.reconcileRemoteManifest();
+        await this.scanLocalWorkspace();
+        this.scheduleOutbox();
+        this.scheduleInbound();
+        this.scheduleRemoteDrain();
+      } catch (error) {
+        console.warn("[chat.dev] workspace reconnect recovery will retry:", error);
+      } finally {
+        this.reconnectPromise = undefined;
+      }
+    })();
+  }
+
+  private async scanLocalWorkspace(report?: (message: string) => void | Promise<void>): Promise<Set<string>> {
+    const seen = new Set<string>();
+    let itemCount = 0;
+    const pending: Array<{ path: string; inlineData?: Uint8Array; sizeHint?: number }> = [];
+    const flushPending = async (): Promise<void> => {
+      if (!pending.length) return;
+      await this.journal.enqueueMany(pending.splice(0));
+      this.scheduleOutbox();
+    };
+    const visit = async (absoluteDirectory: string, relativeDirectory: string): Promise<void> => {
+      let entries: Dirent[];
+      try {
+        entries = await fs.readdir(absoluteDirectory, { withFileTypes: true });
+      } catch {
         return;
       }
-      throw new Error(String(stat.error || "Could not inspect remote path"));
-    }
-    if (stat.type === "directory") {
-      this.suppressed.set(relativePath, { kind: "directory", until: Date.now() + 3_000 });
-      await vscode.workspace.fs.createDirectory(uri);
-      return;
-    }
-    const file = await this.rpc("read_file", { path: relativePath });
-    const contents = Buffer.from(String(file.dataBase64 || ""), "base64");
-    if (this.documentTimers.has(relativePath) || (this.documentVersions.get(relativePath) || 0) !== documentVersion) return;
-    const pushed = this.locallyPushed.get(relativePath);
-    if (pushed && pushed.until > Date.now() && pushed.hash === hash(contents)) {
-      this.locallyPushed.delete(relativePath);
-      return;
-    }
-    this.suppressed.set(relativePath, { kind: "file", hash: hash(contents), until: Date.now() + 3_000 });
-    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(uri.fsPath)));
-    const openDocument = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
-    if (openDocument) {
-      const nextText = contents.toString("utf8");
-      if (openDocument.getText() !== nextText) {
-        const edit = new vscode.WorkspaceEdit();
-        edit.replace(uri, new vscode.Range(openDocument.positionAt(0), openDocument.positionAt(openDocument.getText().length)), nextText);
-        if (!(await vscode.workspace.applyEdit(edit))) throw new Error("Could not apply the remote editor change locally");
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      const subdirectories: Array<{ absolute: string; relative: string }> = [];
+      for (const dirent of entries) {
+        const relativePath = relativeDirectory ? `${relativeDirectory}/${dirent.name}` : dirent.name;
+        if (this.ignored(relativePath)) continue;
+        const absolutePath = path.join(absoluteDirectory, dirent.name);
+        let metadata: Awaited<ReturnType<typeof fs.lstat>>;
+        try { metadata = await fs.lstat(absolutePath); } catch { continue; }
+        if (metadata.isSymbolicLink() && !(await this.portableSymlink(absolutePath))) continue;
+        if (!metadata.isDirectory() && !metadata.isFile() && !metadata.isSymbolicLink()) continue;
+        seen.add(relativePath);
+        itemCount += 1;
+        const fingerprint = localStatFingerprint(metadata);
+        const inlineData = metadata.isFile() ? this.dirtyDocumentData(relativePath) : undefined;
+        if (!inlineData && this.journal.isManaged(relativePath) && this.journal.localFingerprint(relativePath) === fingerprint) {
+          if (metadata.isDirectory()) subdirectories.push({ absolute: absolutePath, relative: relativePath });
+          continue;
+        }
+        pending.push({ path: relativePath, ...(inlineData ? { inlineData } : {}), sizeHint: inlineData?.byteLength || metadata.size });
+        if (pending.length >= 100) await flushPending();
+        if (metadata.isDirectory()) subdirectories.push({ absolute: absolutePath, relative: relativePath });
       }
-      if (openDocument.isDirty) await openDocument.save();
-    } else {
-      await vscode.workspace.fs.writeFile(uri, contents);
+      if (report && (itemCount <= entries.length || itemCount % 250 < entries.length)) {
+        await safeReport(report, `Syncing ${itemCount} project items; files already copied are ready to use`);
+      }
+      for (const directory of subdirectories) await visit(directory.absolute, directory.relative);
+    };
+    await visit(this.workspacePath, "");
+    await flushPending();
+    await this.journal.queueManagedDeletions(seen, (entryPath) => this.ignored(entryPath));
+    this.scheduleOutbox();
+    return seen;
+  }
+
+  private async queueLocalUri(uri: vscode.Uri): Promise<void> {
+    const relativePath = this.relativePath(uri);
+    if (!relativePath || this.ignored(relativePath)) return;
+    await this.queueLocalPath(relativePath, this.openDocumentData(relativePath));
+  }
+
+  private async queueLocalPath(relativePath: string, inlineData?: Uint8Array): Promise<void> {
+    if (this.disposed || !this.journal || this.ignored(relativePath)) return;
+    let sizeHint = inlineData?.byteLength || 0;
+    if (!inlineData) {
+      try { sizeHint = (await fs.lstat(this.absolutePath(relativePath))).size; } catch {}
+    }
+    await this.journal.enqueue({ path: relativePath, ...(inlineData ? { inlineData } : {}), sizeHint });
+    this.scheduleOutbox();
+  }
+
+  private scheduleOutbox(): void {
+    if (this.outboxPromise || this.disposed || !this.protocolReady) return;
+    this.outboxPromise = this.runOutbox().finally(() => {
+      this.outboxPromise = undefined;
+      if (this.journal.nextReadyOperations(1).length) this.scheduleOutbox();
+      this.scheduleInbound();
+    });
+  }
+
+  private async runOutbox(): Promise<void> {
+    while (!this.disposed) {
+      const operations = this.journal.nextReadyOperations(OUTBOX_CONCURRENCY);
+      if (!operations.length) return;
+      await Promise.all(operations.map((operation) => this.processLocalOperation(operation)));
     }
   }
 
-  private rememberLocalPush(relativePath: string, value: Uint8Array): void {
-    this.locallyPushed.set(relativePath, { hash: hash(value), until: Date.now() + 2_000 });
-  }
-
-  private wasJustPushed(relativePath: string, value: Uint8Array): boolean {
-    const pushed = this.locallyPushed.get(relativePath);
-    if (!pushed) return false;
-    if (pushed.until <= Date.now()) {
-      this.locallyPushed.delete(relativePath);
-      return false;
-    }
-    return pushed.hash === hash(value);
-  }
-
-  private async matchesRemoteWrite(relativePath: string, uri: vscode.Uri, deleted: boolean): Promise<boolean> {
-    const expected = this.suppressed.get(relativePath);
-    if (!expected) return false;
-    if (expected.until <= Date.now()) {
-      this.suppressed.delete(relativePath);
-      return false;
-    }
-    if (deleted) return expected.kind === "deleted";
-    if (expected.kind === "deleted") return false;
+  private async processLocalOperation(operation: PendingWorkspaceOperation): Promise<void> {
     try {
-      const metadata = await vscode.workspace.fs.stat(uri);
-      if (metadata.type & vscode.FileType.Directory) return expected.kind === "directory";
-      if (!(metadata.type & vscode.FileType.File) || expected.kind !== "file") return false;
-      return hash(await vscode.workspace.fs.readFile(uri)) === expected.hash;
-    } catch {
-      return false;
+      let prepared = operation.prepared || await this.prepareLocalOperation(operation);
+      if (!prepared) {
+        await this.journal.discard(operation.path, operation.version);
+        return;
+      }
+      if (!operation.prepared) {
+        const updated = await this.journal.markPrepared(operation.path, operation.version, prepared);
+        if (!updated) return;
+        operation = updated;
+      }
+      const inflight = await this.journal.markInflight(operation.path, operation.version);
+      if (!inflight) return;
+      prepared = inflight.prepared!;
+      const payload = operationPayload(this.journal, inflight, prepared);
+      let result: RpcResult;
+      if (prepared.kind === "file") {
+        const probe = await this.rpc<RpcResult>("workspace_sync_apply", { ...payload, probeOnly: true });
+        result = probe.needsContent
+          ? prepared.dataBase64 != null
+            ? await this.rpc<RpcResult>("workspace_sync_apply", payload)
+            : await this.uploadLargeFile(payload, prepared)
+          : probe;
+      } else {
+        result = await this.rpc<RpcResult>("workspace_sync_apply", payload);
+      }
+      const entry = remoteEntryFromResult(result.entry);
+      await this.journal.acknowledge({
+        path: inflight.path,
+        version: inflight.version,
+        revision: result.revision == null ? null : String(result.revision),
+        entry,
+        conflict: result.conflict === true,
+        serverCursor: typeof result.cursor === "number" ? result.cursor : undefined,
+        remotelyApplied: true,
+      });
+      if (result.conflict === true) this.showConflictNotice(inflight.path, String(result.conflictPath || ""));
+      this.scheduleRemoteDrain();
+    } catch (error) {
+      if (isChecksumMismatch(error) || error instanceof LocalFileChangedError) {
+        await this.journal.discard(operation.path, operation.version);
+        await this.queueLocalPath(operation.path, this.openDocumentData(operation.path));
+      } else {
+        await this.journal.fail(operation.path, operation.version, error);
+        setTimeout(() => this.scheduleOutbox(), 1_000);
+      }
     }
   }
 
-  private async rpc(event: string, payload: Record<string, unknown>, allowError = false): Promise<RpcResult> {
+  private async uploadLargeFile(payload: Record<string, unknown>, prepared: PreparedLocalState): Promise<RpcResult> {
+    if (!prepared.sourcePath) throw new Error("Large workspace file has no local source path");
+    const begin = await this.rpc<RpcResult & { transferId: string }>("workspace_sync_file_begin", { ...payload, size: prepared.size });
+    let sequence = 0;
+    try {
+      for await (const rawChunk of createReadStream(prepared.sourcePath, { highWaterMark: TRANSFER_CHUNK_SIZE })) {
+        const chunk = Buffer.from(rawChunk);
+        await this.rpc("workspace_sync_file_chunk", {
+          transferId: begin.transferId,
+          sequence: sequence++,
+          dataBase64: chunk.toString("base64"),
+        });
+      }
+      return await this.rpc("workspace_sync_file_commit", { transferId: begin.transferId });
+    } catch (error) {
+      await this.rpc("workspace_sync_file_abort", { transferId: begin.transferId }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async prepareLocalOperation(operation: PendingWorkspaceOperation): Promise<PreparedLocalState | undefined> {
+    const inline = operation.inlineDataBase64 == null ? undefined : Buffer.from(operation.inlineDataBase64, "base64");
+    return this.snapshotLocalPath(operation.path, inline);
+  }
+
+  private async snapshotLocalPath(relativePath: string, inlineData?: Uint8Array): Promise<PreparedLocalState | undefined> {
+    const absolutePath = this.absolutePath(relativePath);
+    let metadata: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      metadata = await fs.lstat(absolutePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { kind: "deleted", revision: null, size: 0, mode: 0 };
+      }
+      throw error;
+    }
+    const mode = metadata.mode & 0o777;
+    if (metadata.isDirectory()) return { kind: "directory", revision: `d:${mode}`, size: 0, mode, localFingerprint: localStatFingerprint(metadata) };
+    if (metadata.isSymbolicLink()) {
+      const target = await fs.readlink(absolutePath);
+      if (!this.validSymlinkTarget(absolutePath, target)) return undefined;
+      return { kind: "symlink", revision: `l:${hash(Buffer.from(target))}:${mode}`, size: 0, mode, target, localFingerprint: localStatFingerprint(metadata) };
+    }
+    if (!metadata.isFile()) return undefined;
+    if (inlineData) {
+      const data = Buffer.from(inlineData);
+      const contentHash = hash(data);
+      return {
+        kind: "file",
+        revision: `f:${contentHash}:${mode}`,
+        size: data.byteLength,
+        mode,
+        contentHash,
+        dataBase64: data.toString("base64"),
+      };
+    }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = attempt ? await fs.lstat(absolutePath) : metadata;
+      if (!before.isFile()) return this.snapshotLocalPath(relativePath);
+      if (before.size <= SMALL_FILE_LIMIT) {
+        const data = await fs.readFile(absolutePath);
+        const after = await fs.lstat(absolutePath);
+        if (!sameFileStat(before, after)) continue;
+        const contentHash = hash(data);
+        return {
+          kind: "file",
+          revision: `f:${contentHash}:${after.mode & 0o777}`,
+          size: data.byteLength,
+          mode: after.mode & 0o777,
+          contentHash,
+          dataBase64: data.toString("base64"),
+          localFingerprint: localStatFingerprint(after),
+        };
+      }
+      const contentHash = await hashFile(absolutePath);
+      const after = await fs.lstat(absolutePath);
+      if (!sameFileStat(before, after)) continue;
+      return {
+        kind: "file",
+        revision: `f:${contentHash}:${after.mode & 0o777}`,
+        size: after.size,
+        mode: after.mode & 0o777,
+        contentHash,
+        sourcePath: absolutePath,
+        localFingerprint: localStatFingerprint(after),
+      };
+    }
+    throw new LocalFileChangedError(relativePath);
+  }
+
+  private scheduleRemoteDrain(): void {
+    if (this.remoteDrainPromise || this.disposed || !this.protocolReady || !this.remoteDrainEnabled) return;
+    this.remoteDrainPromise = this.drainRemoteChanges().catch((error) => {
+      console.warn("[chat.dev] remote workspace changes will retry:", error);
+    }).finally(() => {
+      this.remoteDrainPromise = undefined;
+    });
+  }
+
+  private async flushRemoteChanges(): Promise<void> {
+    if (this.remoteDrainPromise) return this.remoteDrainPromise;
+    if (this.disposed || !this.protocolReady || !this.remoteDrainEnabled) return;
+    this.remoteDrainPromise = this.drainRemoteChanges().finally(() => {
+      this.remoteDrainPromise = undefined;
+    });
+    return this.remoteDrainPromise;
+  }
+
+  private async drainRemoteChanges(): Promise<void> {
+    while (!this.disposed) {
+      const result = await this.rpc<RpcResult & {
+        changes: RemoteWorkspaceChange[];
+        cursor: number;
+        headCursor: number;
+        hasMore: boolean;
+        rescanRequired: boolean;
+      }>("workspace_sync_changes", { cursor: this.journal.remoteCursor, limit: 2_000 });
+      if (result.rescanRequired) {
+        await this.reconcileRemoteManifest();
+        return;
+      }
+      if (result.changes.length) await this.journal.stageRemoteChanges(result.changes, result.cursor);
+      else await this.journal.setRemoteCursor(result.cursor);
+      await this.flushInboundChanges();
+      if (!result.hasMore) return;
+    }
+  }
+
+  private scheduleInbound(): void {
+    if (this.inboundPromise || this.disposed || !this.protocolReady) return;
+    this.inboundPromise = this.processInboundChanges().catch((error) => {
+      console.warn("[chat.dev] inbound workspace changes will retry:", error);
+    }).finally(() => {
+      this.inboundPromise = undefined;
+    });
+  }
+
+  private async flushInboundChanges(): Promise<void> {
+    if (this.inboundPromise) return this.inboundPromise;
+    if (this.disposed || !this.protocolReady) return;
+    this.inboundPromise = this.processInboundChanges().finally(() => {
+      this.inboundPromise = undefined;
+    });
+    return this.inboundPromise;
+  }
+
+  private async processInboundChanges(): Promise<void> {
+    const blockedPaths = new Set<string>();
+    for (const change of this.journal.pendingRemoteChanges()) {
+      if (blockedPaths.has(change.path)) continue;
+      if (this.ignored(change.path)) {
+        await this.journal.acknowledgeRemoteChange(change.id, false);
+        continue;
+      }
+      if (change.status === "applying") {
+        await this.materializeRemoteChange(change);
+        continue;
+      }
+      if (change.sequence != null && change.sequence <= this.journal.knownSequence(change.path)) {
+        await this.journal.acknowledgeRemoteChange(change.id, false);
+        continue;
+      }
+      if (this.journal.hasPending(change.path)) {
+        blockedPaths.add(change.path);
+        continue;
+      }
+      const local = await this.snapshotLocalPath(change.path, this.openDocumentData(change.path));
+      const previousRevision = this.journal.known(change.path)?.revision || null;
+      if (local && local.revision !== previousRevision && local.revision !== change.revision) {
+        await this.enqueuePreparedSnapshot(change.path, local);
+        blockedPaths.add(change.path);
+        continue;
+      }
+      const applying = await this.journal.beginRemoteApply(change.id, local?.revision || null);
+      if (applying) await this.materializeRemoteChange(applying);
+    }
+  }
+
+  private async materializeRemoteChange(change: PendingRemoteWorkspaceChange): Promise<void> {
+    const expectedRevision = change.expectedLocalRevision ?? null;
+    if (change.kind === "file") {
+      const temporary = `${this.absolutePath(change.path)}${PARTIAL_SUFFIX}`;
+      await fs.mkdir(path.dirname(temporary), { recursive: true });
+      await fs.rm(temporary, { recursive: true, force: true });
+      try {
+        const handle = await fs.open(temporary, "w", modeOr(change.mode, 0o644));
+        try {
+          let offset = 0;
+          while (true) {
+            const chunk = await this.rpc<RpcResult & {
+              dataBase64: string;
+              nextOffset: number;
+              eof: boolean;
+              revision: string;
+            }>("workspace_sync_read_file", {
+              path: change.path,
+              offset,
+              length: TRANSFER_CHUNK_SIZE,
+              expectedRevision: change.revision,
+            });
+            const data = Buffer.from(chunk.dataBase64, "base64");
+            if (data.length) await handle.write(data, 0, data.length, offset);
+            offset = chunk.nextOffset;
+            if (chunk.eof) break;
+          }
+        } finally {
+          await handle.close();
+        }
+        if (await this.preserveEditMadeDuringRemoteApply(change, expectedRevision)) return;
+        await this.installRemoteFile(change, temporary);
+      } finally {
+        await fs.rm(temporary, { force: true }).catch(() => undefined);
+      }
+    } else {
+      if (await this.preserveEditMadeDuringRemoteApply(change, expectedRevision)) return;
+      const target = this.absolutePath(change.path);
+      if (change.kind === "deleted") {
+        await fs.rm(target, { recursive: true, force: true });
+      } else if (change.kind === "directory") {
+        await replaceNonDirectory(target);
+        await fs.mkdir(target, { recursive: true });
+        await fs.chmod(target, modeOr(change.mode, 0o755));
+      } else {
+        const linkTarget = String(change.target || "");
+        if (!this.validSymlinkTarget(target, linkTarget)) throw new Error(`Remote symlink points outside the project: ${change.path}`);
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        const temporary = path.join(path.dirname(target), `${INTERNAL_TEMP_PREFIX}${crypto.randomUUID()}`);
+        await fs.symlink(linkTarget, temporary);
+        await removeDirectoryAtTarget(target);
+        await atomicReplace(temporary, target);
+      }
+    }
+    await this.journal.acknowledgeRemoteChange(change.id);
+  }
+
+  private async preserveEditMadeDuringRemoteApply(change: PendingRemoteWorkspaceChange, expectedRevision: string | null): Promise<boolean> {
+    const current = await this.snapshotLocalPath(change.path, this.openDocumentData(change.path));
+    if ((current?.revision || null) === expectedRevision) return false;
+    if (current) await this.enqueuePreparedSnapshot(change.path, current);
+    await this.journal.acknowledgeRemoteChange(change.id, false);
+    this.scheduleOutbox();
+    return true;
+  }
+
+  private async installRemoteFile(change: PendingRemoteWorkspaceChange, temporary: string): Promise<void> {
+    const target = this.absolutePath(change.path);
+    const document = this.openDocument(change.path);
+    if (document?.isDirty) throw new LocalFileChangedError(change.path);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await removeDirectoryAtTarget(target);
+    await fs.chmod(temporary, modeOr(change.mode, 0o644));
+    await atomicReplace(temporary, target);
+  }
+
+  private async enqueuePreparedSnapshot(relativePath: string, prepared: PreparedLocalState): Promise<void> {
+    const inlineData = prepared.dataBase64 == null ? undefined : Buffer.from(prepared.dataBase64, "base64");
+    const operation = await this.journal.enqueue({ path: relativePath, ...(inlineData ? { inlineData } : {}), sizeHint: prepared.size });
+    await this.journal.markPrepared(relativePath, operation.version, prepared);
+    this.scheduleOutbox();
+  }
+
+  private async waitForOutbox(): Promise<void> {
+    while (!this.disposed && this.journal.hasPending()) {
+      this.scheduleOutbox();
+      await (this.outboxPromise || delay(250));
+      if (this.journal.hasPending()) await delay(250);
+    }
+  }
+
+  private async waitForInbound(): Promise<void> {
+    while (!this.disposed && this.journal.pendingRemoteChanges().length) {
+      this.scheduleInbound();
+      await (this.inboundPromise || delay(100));
+      if (this.journal.pendingRemoteChanges().length && this.journal.hasPending()) await this.waitForOutbox();
+    }
+  }
+
+  private showConflictNotice(originalPath: string, conflictPath: string): void {
+    console.warn(`[chat.dev] Preserved concurrent edits to ${originalPath} in ${conflictPath}`);
+    if (Date.now() - this.lastConflictNotice < 10_000) return;
+    this.lastConflictNotice = Date.now();
+    void vscode.window.showWarningMessage(`Both copies of ${originalPath} were kept because it changed locally and on chat.dev.`);
+  }
+
+  private async rpc<T extends RpcResult = RpcResult>(event: string, payload: Record<string, unknown>): Promise<T> {
     const socket = this.socket;
     if (!socket?.connected) throw new Error("chat.dev workspace mirror is reconnecting");
-    const result = await new Promise<RpcResult>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`chat.dev ${event} timed out`)), 120_000);
-      socket.emit(event, { agentId: this.agentId, ...payload }, (response: RpcResult) => {
+    const result = await new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`chat.dev ${event} timed out`)), 180_000);
+      socket.emit(event, { agentId: this.agentId, ...payload }, (response: T) => {
         clearTimeout(timer);
         resolve(response);
       });
     });
-    if (!allowError && !result.ok) throw new Error(String(result.error || `chat.dev ${event} failed`));
+    if (!result.ok) throw syncError(result.code, String(result.error || `chat.dev ${event} failed`), result);
     return result;
   }
 
+  private openDocumentData(relativePath: string): Uint8Array | undefined {
+    const document = this.openDocument(relativePath);
+    return document && !document.isClosed ? Buffer.from(document.getText(), "utf8") : undefined;
+  }
+
+  private dirtyDocumentData(relativePath: string): Uint8Array | undefined {
+    const document = this.openDocument(relativePath);
+    return document?.isDirty ? Buffer.from(document.getText(), "utf8") : undefined;
+  }
+
+  private openDocument(relativePath: string): vscode.TextDocument | undefined {
+    const uri = vscode.Uri.file(this.absolutePath(relativePath)).toString();
+    return vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri);
+  }
+
   private relativePath(uri: vscode.Uri): string {
+    if (uri.scheme !== "file") return "";
     const value = path.relative(this.workspacePath, uri.fsPath).split(path.sep).join(path.posix.sep);
     return value.startsWith("../") || path.isAbsolute(value) ? "" : value;
+  }
+
+  private absolutePath(relativePath: string): string {
+    const target = path.resolve(this.workspacePath, relativePath);
+    if (!target.startsWith(`${this.workspacePath}${path.sep}`)) throw new Error(`Invalid project path: ${relativePath}`);
+    return target;
   }
 
   private ignored(relativePath: string): boolean {
     const segments = relativePath.split(/[\\/]/).filter(Boolean);
     const configured = new Set(vscode.workspace.getConfiguration("chatdev").get<string[]>("uploadExcludes", []));
-    return segments.some((segment) => segment === ".git" || segment === ".chatdev" || segment === "node_modules" || configured.has(segment));
+    return relativePath === SYNC_MANIFEST
+      || segments.some((segment) => segment === ".chatdev"
+        || segment.endsWith(PARTIAL_SUFFIX)
+        || segment.startsWith(INTERNAL_TEMP_PREFIX)
+        || configured.has(segment));
+  }
+
+  private async portableSymlink(absolutePath: string): Promise<boolean> {
+    try { return this.validSymlinkTarget(absolutePath, await fs.readlink(absolutePath)); }
+    catch { return false; }
+  }
+
+  private validSymlinkTarget(absolutePath: string, target: string): boolean {
+    if (!target || path.isAbsolute(target)) return false;
+    const resolved = path.resolve(path.dirname(absolutePath), target);
+    return resolved === this.workspacePath || resolved.startsWith(`${this.workspacePath}${path.sep}`);
+  }
+
+  private async localPathExists(relativePath: string): Promise<boolean> {
+    try { await fs.lstat(this.absolutePath(relativePath)); return true; }
+    catch { return false; }
   }
 }
 
-type SuppressedRemoteWrite =
-  | { kind: "file"; hash: string; until: number }
-  | { kind: "directory" | "deleted"; until: number };
+class LocalFileChangedError extends Error {
+  constructor(relativePath: string) {
+    super(`Local file kept changing while it was read: ${relativePath}`);
+  }
+}
+
+function operationPayload(
+  journal: WorkspaceSyncJournal,
+  operation: PendingWorkspaceOperation,
+  prepared: PreparedLocalState,
+): Record<string, unknown> {
+  return {
+    generation: journal.generation,
+    clientId: journal.clientId,
+    version: operation.version,
+    opId: operation.opId,
+    path: operation.path,
+    kind: prepared.kind,
+    baseRevision: operation.baseRevision,
+    mode: prepared.mode,
+    ...(prepared.contentHash ? { contentHash: prepared.contentHash } : {}),
+    ...(prepared.target != null ? { target: prepared.target } : {}),
+    ...(prepared.dataBase64 != null ? { dataBase64: prepared.dataBase64 } : {}),
+  };
+}
+
+function remoteEntryFromResult(value: unknown): RemoteWorkspaceEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Record<string, unknown>;
+  if (!new Set(["file", "directory", "symlink"]).has(String(entry.type || "")) || !entry.revision) return null;
+  return {
+    type: entry.type as RemoteWorkspaceEntry["type"],
+    revision: String(entry.revision),
+    size: Math.max(0, Number(entry.size) || 0),
+    mode: Math.max(0, Number(entry.mode) || 0),
+    ...(entry.target != null ? { target: String(entry.target) } : {}),
+  };
+}
+
+function changeFromEntry(entry: { path: string } & RemoteWorkspaceEntry): RemoteWorkspaceChange {
+  return {
+    path: entry.path,
+    kind: entry.type,
+    revision: entry.revision,
+    size: entry.size,
+    mode: entry.mode,
+    target: entry.target,
+  };
+}
+
+function deletedChange(entryPath: string): RemoteWorkspaceChange {
+  return { path: entryPath, kind: "deleted", revision: null, size: 0, mode: null };
+}
+
+function sameFileStat(left: Awaited<ReturnType<typeof fs.lstat>>, right: Awaited<ReturnType<typeof fs.lstat>>): boolean {
+  return left.size === right.size
+    && left.mode === right.mode
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function localStatFingerprint(metadata: Awaited<ReturnType<typeof fs.lstat>>): string {
+  const kind = metadata.isDirectory() ? "d" : metadata.isSymbolicLink() ? "l" : "f";
+  return `${kind}:${metadata.size}:${Number(metadata.mode) & 0o777}:${metadata.mtimeMs}:${metadata.ctimeMs}`;
+}
 
 function hash(value: Uint8Array): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function modeOr(value: number | null, fallback: number): number {
+  return Number.isSafeInteger(value) ? Number(value) & 0o777 : fallback;
+}
+
+function hashFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const digest = crypto.createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => digest.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(digest.digest("hex")));
+  });
+}
+
+async function replaceNonDirectory(target: string): Promise<void> {
+  try {
+    const metadata = await fs.lstat(target);
+    if (!metadata.isDirectory()) await fs.rm(target, { recursive: true, force: true });
+  } catch {}
+}
+
+async function removeDirectoryAtTarget(target: string): Promise<void> {
+  try {
+    const metadata = await fs.lstat(target);
+    if (metadata.isDirectory()) await fs.rm(target, { recursive: true, force: true });
+  } catch {}
+}
+
+async function atomicReplace(temporary: string, target: string): Promise<void> {
+  try {
+    await fs.rename(temporary, target);
+  } catch (error) {
+    if (!new Set(["EEXIST", "EPERM", "EACCES"]).has(String((error as NodeJS.ErrnoException).code || ""))) throw error;
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.rename(temporary, target);
+  }
+}
+
+function syncError(code: unknown, message: string, detail: Record<string, unknown> = {}): Error {
+  return Object.assign(new Error(message), detail, { code: code == null ? undefined : String(code) });
+}
+
+function isGenerationConflict(error: unknown): boolean {
+  return String((error as Error & { code?: string })?.code || "").includes("generation_conflict")
+    || String((error as Error & { code?: string })?.code || "").includes("client_conflict");
+}
+
+function isChecksumMismatch(error: unknown): boolean {
+  return (error as Error & { code?: string })?.code === "workspace_sync_checksum_mismatch";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function safeReport(report: StartOptions["report"], message: string): Promise<void> {
+  try { await report?.(message); }
+  catch (error) { console.warn("[chat.dev] Could not update workspace sync progress:", error); }
 }
 
 async function rememberMirror(api: ChatDevApi, agentId: string, workspacePath: string): Promise<void> {
@@ -357,11 +1072,17 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 function notFoundError(): Error {
-  const error = new Error("Agent not found") as Error & { status?: number };
-  error.status = 404;
-  return error;
+  return Object.assign(new Error("Agent not found"), { status: 404 });
 }
 
 function mirrorKey(serverUrl: string, workspacePath: string): string {
   return `${serverUrl}:${path.resolve(workspacePath)}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unrefTimer(timer: ReturnType<typeof setInterval>): void {
+  if (typeof (timer as { unref?: () => void }).unref === "function") (timer as { unref: () => void }).unref();
 }

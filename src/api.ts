@@ -1,6 +1,4 @@
 import * as crypto from "crypto";
-import { createReadStream } from "fs";
-import { stat } from "fs/promises";
 import * as vscode from "vscode";
 import { io, type Socket } from "socket.io-client";
 
@@ -126,6 +124,10 @@ export class ChatDevApi {
 
   get globalState(): vscode.Memento {
     return this.context.globalState;
+  }
+
+  get globalStoragePath(): string {
+    return this.context.globalStorageUri.fsPath;
   }
 
   get serverUrl(): string {
@@ -524,76 +526,6 @@ export class ChatDevApi {
 
   async getAgentOpenUrl(agentId: string): Promise<string> {
     return (await this.request<{ browserUrl: string }>(`/api/editor-handoffs/agents/${encodeURIComponent(agentId)}/open-url`)).browserUrl;
-  }
-
-  async uploadLocalFile(agentId: string, remotePath: string, localPath: string): Promise<void> {
-    const metadata = await stat(localPath);
-    const socket = await this.connectSocket();
-    try {
-      const begin = await socketAck<{ ok: boolean; transferId?: string; error?: string }>(socket, "file_upload_begin", {
-        agentId,
-        path: remotePath,
-        size: metadata.size,
-        mode: metadata.mode,
-      });
-      if (!begin.ok || !begin.transferId) throw new Error(begin.error || "Could not start large file upload.");
-      const hash = crypto.createHash("sha256");
-      let sequence = 0;
-      for await (const rawChunk of createReadStream(localPath, { highWaterMark: 512 * 1024 })) {
-        const chunk = Buffer.from(rawChunk);
-        hash.update(chunk);
-        const response = await socketAck<{ ok: boolean; error?: string }>(socket, "file_upload_chunk", {
-          agentId,
-          transferId: begin.transferId,
-          sequence: sequence++,
-          dataBase64: chunk.toString("base64"),
-        });
-        if (!response.ok) throw new Error(response.error || "Large file upload failed.");
-      }
-      const commit = await socketAck<{ ok: boolean; error?: string }>(socket, "file_upload_commit", {
-        agentId,
-        transferId: begin.transferId,
-        sha256: hash.digest("hex"),
-      }, 120_000);
-      if (!commit.ok) throw new Error(commit.error || "Could not finalize large file upload.");
-    } finally {
-      socket.disconnect();
-    }
-  }
-
-  async uploadWorkspaceArchive(agentId: string, archivePath: string, itemCount: number): Promise<{ itemCount: number; bytes: number }> {
-    const metadata = await stat(archivePath);
-    const socket = await this.connectSocket();
-    try {
-      const begin = await socketAck<{ ok: boolean; transferId?: string; error?: string }>(socket, "workspace_upload_begin", {
-        agentId,
-        size: metadata.size,
-        itemCount,
-      });
-      if (!begin.ok || !begin.transferId) throw new Error(begin.error || "Could not start workspace upload.");
-      const hash = crypto.createHash("sha256");
-      let sequence = 0;
-      for await (const rawChunk of createReadStream(archivePath, { highWaterMark: 512 * 1024 })) {
-        const chunk = Buffer.from(rawChunk);
-        hash.update(chunk);
-        const response = await socketAck<{ ok: boolean; error?: string }>(socket, "workspace_upload_chunk", {
-          agentId,
-          transferId: begin.transferId,
-          sequence: sequence++,
-          dataBase64: chunk.toString("base64"),
-        }, 60_000);
-        if (!response.ok) throw new Error(response.error || "Workspace upload failed.");
-      }
-      const commit = await socketAck<{ ok: boolean; itemCount?: number; bytes?: number; error?: string }>(socket, "workspace_upload_commit", {
-        agentId,
-        transferId: begin.transferId,
-        sha256: hash.digest("hex"),
-      }, 180_000);
-      if (!commit.ok) throw new Error(commit.error || "Could not finalize workspace upload.");
-      return { itemCount: Number(commit.itemCount || 0), bytes: Number(commit.bytes || 0) };
-    } finally {
-      socket.disconnect();
-    }
   }
 
   async connectSocket(): Promise<Socket> {

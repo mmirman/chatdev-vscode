@@ -2,7 +2,7 @@
   "name": "chatdev-remote",
   "displayName": "chat.dev Remote Agents",
   "description": "Continue local Codex, Claude Code, and Cursor conversations on a live chat.dev workspace from VS Code or Cursor.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "chatdev",
   "license": "MIT",
   "repository": {
@@ -226,7 +226,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Optional file or directory names excluded from the initial workspace upload."
+          "description": "Optional file or directory names excluded from project mirroring."
         }
       }
     },
@@ -385,8 +385,7 @@
   },
   "dependencies": {
     "@vscode/chat-extension-utils": "0.0.0-alpha.5",
-    "socket.io-client": "^4.8.1",
-    "tar": "^7.5.20"
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

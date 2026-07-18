@@ -8,7 +8,7 @@ This document explains what the chat.dev server must do for the VS Code/Cursor e
 
 The extension has two main workflows:
 
-1. **Continue a local project on chat.dev:** the extension discovers the project's local coding sessions, lets the user choose which one is the Default, creates the agent, uploads the workspace and every discovered session, and keeps the original local project open as a two-way mirror.
+1. **Continue a local project on chat.dev:** the extension discovers the project's local coding sessions, lets the user choose which one is the Default, creates the agent, starts a progressive per-object workspace sync, transfers every discovered session, and keeps the original local project open as a two-way mirror.
 2. **Open an existing agent:** the browser shows the account's agents. Choosing one returns to the editor, which replaces the current workspace with the agent's remote filesystem. The user opens a coding-agent session with the editor's **Agent** action.
 
 An **agent** owns one machine and one `/workspace` directory. A **session** is one named coding-agent conversation on that machine, with its own harness process, tmux session, terminal, status, and ordered history. Several sessions can edit the same workspace concurrently. Session identity is a column on the existing conversation events, projections, subscriptions, replies, and channel state; there is no separate session transcript pipeline. A branch starts with a copy of its parent's Simplify history, while an independent session starts empty. Runtimes with a native fork operation also inherit the parent runtime context.
@@ -19,10 +19,10 @@ An agent always has a Default session. Its session ID equals the agent ID so old
 
 | Component | Job |
 | --- | --- |
-| VS Code/Cursor extension | Find local sessions, show continuation settings, upload files, handle browser callbacks, and implement the virtual filesystem and terminals |
+| VS Code/Cursor extension | Find local sessions, show continuation settings, journal file changes, handle browser callbacks, and implement the virtual filesystem and terminals |
 | chat.dev web app | Complete editor sign-in and show the account-aware agent picker |
 | chat.dev REST API | Sign the editor in, coordinate browser handoffs, manage agents and sessions, project session-specific histories from the canonical conversation log, and save account-wide provider credentials |
-| chat.dev Socket.IO gateway | Carry file, session-terminal, upload, and session-handoff messages between the extension and worker |
+| chat.dev Socket.IO gateway | Carry workspace-sync, session-terminal, file, and session-handoff messages between the extension and worker |
 | Agent worker | Own `/workspace` and run one isolated harness/tmux pair for every active session |
 
 ## Complete handoff sequence
@@ -58,7 +58,12 @@ sequenceDiagram
     E->>A: GET /api/auth/socket-token
     E->>A: Connect Socket.IO
 
-    E->>W: workspace_upload_begin / chunk / commit
+    E->>W: workspace_sync_begin (agent remains usable)
+    loop Each local path, smaller objects first
+        E->>W: workspace_sync_apply or file begin / chunks / commit
+        W-->>E: Durable revision and change cursor
+    end
+    E->>W: workspace_sync_complete
     loop Every local coding session
         E->>W: session_import_begin / chunk / commit
         W->>W: Install state for the matching remote session
@@ -67,7 +72,7 @@ sequenceDiagram
     W-->>E: Session terminal output and fs_change events
 ```
 
-If an upload or session step fails, the agent remains on the account. The editor form reports the failed step and retries against the same created agent when the user submits the unchanged settings again.
+If a file or session step fails, the agent remains on the account. The extension keeps unacknowledged file operations in its local journal and retries them against the same machine after network, editor, or worker restarts.
 
 ## REST API
 
@@ -627,17 +632,76 @@ The remote shell is separate from the coding-agent interface but uses the same m
 | `shell_output` | Server event | Stream shell output |
 | `shell_exit` | Server event | Report its exit code |
 
-## Upload the initial workspace
+## Progressive workspace sync
 
-The extension creates one gzip-compressed tar archive for the whole project. It includes hidden files, `.git`, empty directories, file modes, and symlinks unless the user explicitly configured a matching name in `chatdev.uploadExcludes`.
+Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. The harness starts first and remains operable while files arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
 
-1. `workspace_upload_begin` sends `agentId`, compressed byte `size`, and the local `itemCount`; the server returns `transferId`.
-2. `workspace_upload_chunk` sends `transferId`, increasing `sequence`, and `dataBase64`.
-3. `workspace_upload_commit` sends `transferId` and the archive's `sha256`.
+`workspace_sync_begin` creates `/workspace/.chatdev-sync-manifest.json`. This file is a human- and machine-readable projection of the worker's durable journal. It reports the generation, `syncing` or `complete` status, discovery state, object counts, latest local version, remote change cursor, timestamps, and active downloads. It remains after `workspace_sync_complete`, which records `discoveryComplete: true` only after the extension has received a durable acknowledgement for every object observed during the first pass. `status` is `syncing` whenever discovery or a later live file transfer is active, and returns to `complete` when no file is partial. Worker or editor restarts retain the manifest and both journals, so the same generation resumes.
 
-The worker verifies the byte count and checksum, extracts the archive inside `/workspace`, and returns the extracted `itemCount` and uncompressed file bytes. The extension marks the transfer complete only when the returned item count equals the local manifest count.
+Incomplete file content is written to the deterministic sibling `<path>.chatdev-downloading`. The target `<path>` is left unchanged or absent until all bytes match the declared size and SHA-256, then the completed sibling is atomically installed at the target. A worker restart changes any retained `activeDownloads` entry to `interrupted`; retrying that path replaces the stale partial content.
 
-The per-path `write_file` and checksummed `file_upload_*` events remain available for normal editor saves and individual large files after the project is open.
+### Control and discovery events
+
+| Event | Request fields after `agentId` | What the worker returns or does |
+| --- | --- | --- |
+| `workspace_sync_status` | none | Active `generation`, owning `clientId`, `phase`, change `cursor`, and sync manifest name |
+| `workspace_sync_begin` | `generation`, `clientId`, optional `expectedGeneration` | Claims or resumes a generation and writes the persistent sync manifest |
+| `workspace_sync_manifest` | optional `afterPath`, `limit`, `reconcile` | A lexicographically paged path/revision manifest and its current cursor |
+| `workspace_sync_changes` | `cursor`, optional `limit` | Ordered changes after the cursor, or `rescanRequired: true` when the retained log no longer reaches it |
+| `workspace_sync_complete` | `generation`, `clientId`, `lastLocalVersion`, `discoveredObjectCount` | Verifies that version was applied, requires no active downloads, switches to `live`, and records completed discovery in the manifest |
+
+The extension captures the cursor before reading a paged manifest, then consumes every change after that cursor. If a watcher notification or retained cursor is lost, it requests `workspace_sync_manifest` with `reconcile: true`, compares revisions, and continues from the new snapshot cursor.
+
+### Apply one object
+
+`workspace_sync_apply` accepts:
+
+```json
+{
+  "agentId": "agent-id",
+  "generation": "generation-uuid",
+  "clientId": "client-uuid",
+  "version": 42,
+  "opId": "op-uuid",
+  "path": "src/index.ts",
+  "kind": "file",
+  "baseRevision": "f:old-sha256:420",
+  "mode": 420,
+  "contentHash": "new-sha256",
+  "dataBase64": "...",
+  "probeOnly": false
+}
+```
+
+`kind` is `file`, `directory`, `symlink`, or `deleted`. A symlink includes a relative `target`. A file revision is `f:<sha256>:<mode>`; directory and symlink revisions use the same stable metadata scheme.
+
+The tuple `(generation, path, version, opId)` is idempotent. Retrying an acknowledged operation returns the original result. A higher version for one path supersedes a lower queued version, while operations on different paths can progress independently.
+
+`baseRevision` is compare-and-swap state. When the worker still has that revision, it atomically installs the local object. When the harness changed the path first, the remote object remains at its original path and the local object is written to `<path>.chatdev-conflict-local-<timestamp>`. The response includes `conflict`, both revisions, and the conflict path. Deletes also use `baseRevision`; a concurrent remote edit is retained instead of being removed.
+
+Set `probeOnly: true` before sending file content. If the claimed revision already exists, the worker records the operation and returns it without transferring bytes. Otherwise it returns `needsContent: true` without changing the path.
+
+### Large files and remote reads
+
+| Event | Purpose |
+| --- | --- |
+| `workspace_sync_file_begin` | Start a large local-file operation with the same generation, version, operation ID, revision, mode, and declared size |
+| `workspace_sync_file_chunk` | Append an increasing chunk sequence and base64 bytes |
+| `workspace_sync_file_commit` | Verify size and SHA-256, then run the normal compare-and-swap apply |
+| `workspace_sync_file_abort` | Discard an unfinished transfer |
+| `workspace_sync_read_file` | Read a remote file by offset and length while requiring an unchanged expected revision |
+
+Downloads in either direction use the deterministic `.chatdev-downloading` sibling and are renamed into place only after verification. These siblings are reserved protocol paths and never enter either workspace index. If the user edits the local target during a download, that newer edit is journaled and sent back after the remote event is acknowledged instead of being overwritten.
+
+### Durable state and product invariants
+
+- The extension persists its outbound operations, inbound events, local versions, per-path server sequence, remote cursor, and generation under VS Code global storage before acknowledging progress.
+- The worker persists its generation, applied operation results, path manifest, and bounded change log on the agent volume.
+- Workspace sync never writes conversation events, Simplify projections, SMS/voice channel state, subscriptions, or session rows.
+- Initial sync is intentionally not a single point-in-time project snapshot. Each object is usable at its acknowledged revision, and the persistent manifest tells the harness whether discovery is still running.
+- An acknowledged delete is a tombstone for that path/version. Restart replay cannot resurrect an older write.
+- File installs and journal writes are atomic. Content hashes, revisions, and server sequences replace time-based echo suppression.
+- The extension mirrors hidden files, `.git`, `node_modules`, modes, empty directories, and relative in-project symlinks unless a matching name is listed in `chatdev.uploadExcludes`. `.chatdev`, `.chatdev-sync-manifest.json`, `.chatdev-downloading` siblings, and internal temporary files are not mirrored back.
 
 ## Import and resume each session
 
@@ -724,8 +788,11 @@ The extension then starts the agent. The login is present when the first harness
 - [x] Virtual filesystem events and `fs_change`
 - [x] Coding-agent terminal events
 - [x] Independent shell events
-- [x] Large-file upload events
-- [x] Complete checksummed workspace archive upload
+- [x] Durable per-path workspace generations, revisions, and change cursors
+- [x] Progressive initial sync with a persistent machine-readable manifest and explicit partial files
+- [x] Idempotent operations, compare-and-swap conflicts, and tombstones
+- [x] Chunked large-file sync and revision-checked remote reads
+- [x] Restart recovery and manifest reconciliation on both sides
 - [x] Codex session import and resume
 - [x] Claude Code session import and resume
 - [x] Cursor editor chat transcript import

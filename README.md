@@ -57,7 +57,7 @@ The New Agent pane opens inside the editor. For Cursor, its session list is scop
 
 Every discovered local session is transferred. Each becomes a named chat.dev session with its own harness, model, terminal, and history on the shared project. When the extension finds local provider credentials, the same form lets you make them available to all chat.dev agents, install them only on this agent, or use the provider connection already on chat.dev.
 
-After you click **Create New Agent**, the real agent page opens in the browser immediately. It may show **Starting** at first; that same page becomes ready as initialization finishes. The editor pane stays open and shows credential, conversation, startup, upload, and session progress. If setup stops, **Try Again** finishes the existing agent. **Start New Agent and Move Connection** creates a fresh destination and moves this project's connection when it is ready.
+After you click **Create New Agent**, the real agent page opens in the browser immediately. It may show **Starting** at first; that same page becomes ready as initialization finishes. The editor pane stays open and shows credential, conversation, startup, file-sync, and session progress. If setup stops, **Try Again** finishes the existing agent. **Start New Agent and Move Connection** creates a fresh destination and moves this project's connection when it is ready.
 
 The project stays open in the same Cursor or VS Code window. From then on, the local folder mirrors the chat.dev workspace in both directions. In Cursor, **Cursor Agent** opens the selected chat.dev session inside Cursor's real Agent panel, including its imported history and new messages from chat.dev. **Terminal** remains available when you want the coding harness CLI itself.
 
@@ -98,7 +98,7 @@ VS Code saves those conversations in its normal **Chat sessions** list. They sta
 
 1. **Click Continue.** The extension finds Codex, Claude Code, and Cursor conversations associated with the exact open project and opens its New Agent pane in the editor.
 2. **Choose in the editor.** Select the Default session, machine, disk, model, budget, and provider login, then click **Create new agent**. Its browser page opens while setup continues.
-3. **Keep working.** The complete project archive, Git data, every discovered session, and the selected agent settings become available together. The current project stays open and becomes a live two-way mirror of the chat.dev workspace.
+3. **Keep working.** Files appear on the chat.dev machine one by one, with smaller files sent first. The agent is usable during this first pass. `.chatdev-sync-manifest.json` shows whether discovery is still running or complete, and a `filename.chatdev-downloading` sibling means that file is not ready yet. Git data and every discovered session use the same durable connection, and later edits mirror both ways.
 
 The shortcuts are `Ctrl+Alt+Shift+C` and `Ctrl+Alt+Shift+O` on Windows/Linux or `Cmd+Alt+Shift+C` and `Cmd+Alt+Shift+O` on macOS.
 

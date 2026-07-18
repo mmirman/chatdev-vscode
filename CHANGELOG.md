@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Start the remote harness immediately and make each project object available as soon as that object is synchronized.
+- Resume outbound operations and inbound changes from durable editor and worker journals after disconnects or restarts.
+- Reconcile missed watcher events with per-path revisions, ordered cursors, idempotent operations, and compare-and-swap conflict copies.
+- Keep `.chatdev-sync-manifest.json` as an explicit progress record and use `.chatdev-downloading` siblings until transferred files are verified and atomically installed.
+
 ## 0.1.1
 
 - Resume unfinished project connections after Cursor, VS Code, agent, or worker restarts.

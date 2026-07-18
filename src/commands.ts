@@ -4,7 +4,6 @@ import { type Agent, type AgentThread, ChatDevApi, type EditorConversation, type
 import { findLocalAgentSessions, readSession, readSessionMessages, type LocalAgentSession } from "./local-sessions";
 import { findLocalProviderCredentials, type LocalProviderCredentials } from "./local-credentials";
 import { startSessionTranscriptSync, startWorkspaceSessionDiscovery } from "./session-sync";
-import { createWorkspaceArchive, isPortableWorkspaceSymlink } from "./workspace-archive";
 import { showContinueProjectPanel, type ContinuePanelIntent, type ContinuePanelMachineTier, type ContinuePanelSettings } from "./continue-panel";
 import { continuationFailureMessage, isAgentNotFoundError, replacementAgentName } from "./continuation-state";
 import { currentMirroredAgentId, startWorkspaceMirror } from "./workspace-mirror";
@@ -94,7 +93,6 @@ export async function continueCurrentProjectInEditor(api: ChatDevApi): Promise<v
   });
   if (!readyAgent) return;
   await clearPendingContinuation(api, folder.uri.fsPath, readyAgent.id);
-  await startWorkspaceMirror(api, readyAgent.id, folder.uri);
   await startWorkspaceSessionDiscovery(api, readyAgent.id, folder.uri);
   void vscode.window.showInformationMessage(`${readyAgent.name} is ready. All ${sessions.length} session${sessions.length === 1 ? "" : "s"} and this project now mirror chat.dev.`);
 }
@@ -315,7 +313,6 @@ export async function resumePendingContinuations(api: ChatDevApi): Promise<void>
         agent,
       ));
       await clearPendingContinuation(api, folder.uri.fsPath, ready.id);
-      await startWorkspaceMirror(api, ready.id, folder.uri);
       await startWorkspaceSessionDiscovery(api, ready.id, folder.uri);
       void vscode.window.showInformationMessage(`${folder.name} is connected to ${ready.name} on chat.dev.`);
     } catch (error) {
@@ -397,18 +394,15 @@ async function transferBrowserHandoff(
 
     await attachCodingSessions(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
     await writeEditorConnectionState(api, agent, folder, "uploading", sessions.length);
-
-    const entries = await collectEntries(folder, excludedDirectoryNames());
     const editorState = captureEditorState(folder);
-    await api.updateEditorHandoff(token, { status: "uploading", progressMessage: `Packaging ${entries.length} project items` });
-    progress.report({ message: `Packaging ${entries.length} project items` });
-    await uploadWorkspace(api, agent.id, folder, entries, excludedDirectoryNames(), progress, async (message) => {
-      await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
-    });
-    await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(editorState, null, 2)));
-    await writeEditorConnectionState(api, agent, folder, "complete", sessions.length);
     await startSessionSyncs(api, agent, remoteSessions);
-    await startWorkspaceMirror(api, agent.id, folder);
+    await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(editorState, null, 2)));
+    await api.updateEditorHandoff(token, { status: "uploading", progressMessage: "Starting progressive project sync" });
+    await startWorkspaceMirror(api, agent.id, folder, { initialSync: true, report: async (message) => {
+      progress.report({ message });
+      await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
+    } });
+    await writeEditorConnectionState(api, agent, folder, "complete", sessions.length);
     await startWorkspaceSessionDiscovery(api, agent.id, folder);
 
     await api.updateEditorHandoff(token, { status: "complete", progressMessage: `Project and ${sessions.length} sessions ready`, error: null });
@@ -595,17 +589,10 @@ async function prepareRemoteContinuation(
 
   await attachCodingSessions(api, agent, remoteSessions, report);
   await writeEditorConnectionState(api, agent, folder.uri, "uploading", sessions.length);
-
-  const excludes = excludedDirectoryNames();
-  const entries = await collectEntries(folder.uri, excludes);
-  const progress: vscode.Progress<{ message?: string; increment?: number }> = {
-    report: (value) => { if (value.message) report(value.message); },
-  };
-  await report(`Packaging ${entries.length} project items`);
-  await uploadWorkspace(api, agent.id, folder.uri, entries, excludes, progress, report);
-  await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(captureEditorState(folder.uri), null, 2)));
-  await writeEditorConnectionState(api, agent, folder.uri, "complete", sessions.length);
   await startSessionSyncs(api, agent, remoteSessions);
+  await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(captureEditorState(folder.uri), null, 2)));
+  await startWorkspaceMirror(api, agent.id, folder.uri, { initialSync: true, report });
+  await writeEditorConnectionState(api, agent, folder.uri, "complete", sessions.length);
   return agent;
 }
 
@@ -850,98 +837,6 @@ function captureEditorState(folder: vscode.Uri): EditorState {
     }
   }
   return { tabs };
-}
-
-type UploadEntry = { uri: vscode.Uri; relativePath: string; type: vscode.FileType; size: number };
-
-async function uploadWorkspace(
-  api: ChatDevApi,
-  agentId: string,
-  folder: vscode.Uri,
-  entries: UploadEntry[],
-  excludes: Set<string>,
-  progress: vscode.Progress<{ message?: string; increment?: number }>,
-  report?: (message: string) => void | Promise<void>,
-): Promise<void> {
-  const itemCount = entries.length;
-  let archive: Awaited<ReturnType<typeof createWorkspaceArchive>> | undefined;
-  let archiveError: unknown;
-  try {
-    archive = await createWorkspaceArchive(folder, excludes, entries.map((entry) => entry.relativePath));
-    const message = `Uploading ${itemCount} project items in one verified transfer`;
-    progress.report({ message, increment: 75 });
-    await report?.(message);
-    const result = await api.uploadWorkspaceArchive(agentId, archive.path, itemCount);
-    if (result.itemCount !== itemCount) {
-      throw new Error(`The agent extracted ${result.itemCount} of ${itemCount} project items.`);
-    }
-    progress.report({ message: `Verified ${result.itemCount} project items`, increment: 10 });
-    await report?.(`Verified ${result.itemCount} uploaded project items`);
-    return;
-  } catch (error) {
-    archiveError = error;
-  } finally {
-    await archive?.dispose();
-  }
-
-  const files = entries.filter((entry) => entry.type & vscode.FileType.File);
-  if (!files.length) throw archiveError;
-  const reason = archiveError instanceof Error ? archiveError.message : String(archiveError);
-  await report?.(`The archive transfer stopped (${reason}). Uploading ${files.length} files individually`);
-  const failures: string[] = [];
-  for (const [index, entry] of files.entries()) {
-    if (index === 0 || (index + 1) % 25 === 0 || index + 1 === files.length) {
-      const message = `Uploading file ${index + 1} of ${files.length}: ${entry.relativePath}`;
-      progress.report({ message, increment: 80 / files.length });
-      await report?.(message);
-    }
-    try {
-      let lastError: unknown;
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        try {
-          await api.uploadLocalFile(agentId, entry.relativePath, entry.uri.fsPath);
-          lastError = undefined;
-          break;
-        } catch (error) {
-          lastError = error;
-          if (attempt < 3) await delay(attempt * 500);
-        }
-      }
-      if (lastError) throw lastError;
-    } catch (error) {
-      failures.push(`${entry.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (failures.length) {
-    throw new Error(`Uploaded ${files.length - failures.length} of ${files.length} project files. ${failures.slice(0, 5).join("; ")}`);
-  }
-  await report?.(`Verified all ${files.length} project files`);
-}
-
-async function collectEntries(root: vscode.Uri, excludes: Set<string>): Promise<UploadEntry[]> {
-  const entries: UploadEntry[] = [];
-  async function visit(directory: vscode.Uri, relativeDirectory: string): Promise<void> {
-    for (const [name, type] of await vscode.workspace.fs.readDirectory(directory)) {
-      if (excludes.has(name)) continue;
-      const uri = vscode.Uri.joinPath(directory, name);
-      const relativePath = path.posix.join(relativeDirectory, name);
-      if (type & vscode.FileType.SymbolicLink) {
-        if (!(await isPortableWorkspaceSymlink(uri))) continue;
-        entries.push({ uri, relativePath, type: vscode.FileType.SymbolicLink, size: 0 });
-      } else if (type & vscode.FileType.Directory) {
-        entries.push({ uri, relativePath, type: vscode.FileType.Directory, size: 0 });
-        await visit(uri, relativePath);
-      } else if (type & vscode.FileType.File) {
-        entries.push({ uri, relativePath, type: vscode.FileType.File, size: (await vscode.workspace.fs.stat(uri)).size });
-      }
-    }
-  }
-  await visit(root, "");
-  return entries;
-}
-
-function excludedDirectoryNames(): Set<string> {
-  return new Set(vscode.workspace.getConfiguration("chatdev").get<string[]>("uploadExcludes", []));
 }
 
 function workspaceDisplayName(value: string): string {
