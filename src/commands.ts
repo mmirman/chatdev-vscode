@@ -7,7 +7,15 @@ import { startSessionTranscriptSync, startWorkspaceSessionDiscovery } from "./se
 import { showContinueProjectPanel, type ContinuePanelIntent, type ContinuePanelMachineTier, type ContinuePanelSettings } from "./continue-panel";
 import { continuationFailureMessage, isAgentNotFoundError, replacementAgentName } from "./continuation-state";
 import { currentMirroredAgentId, startWorkspaceMirror } from "./workspace-mirror";
-import { captureWorkspaceSourceManifest, type WorkspaceSourceManifest } from "./workspace-source-manifest";
+import {
+  captureWorkspaceSourceManifest,
+  type WorkspaceSourceManifest,
+} from "./workspace-source-manifest";
+import {
+  deleteWorkspaceSourceManifest,
+  persistWorkspaceSourceManifest,
+  readWorkspaceSourceManifest,
+} from "./workspace-manifest-store";
 
 const activeBrowserTransfers = new Set<string>();
 const activePendingResumes = new Set<string>();
@@ -389,7 +397,7 @@ async function transferBrowserHandoff(
   if (activeBrowserTransfers.has(token)) throw new Error("This project connection is already being prepared in the editor.");
   activeBrowserTransfers.add(token);
   try {
-    let sourceManifest = stagedBrowserManifests.get(token);
+    let sourceManifest = await loadStagedBrowserManifest(api, token, handoff.sourceManifestId);
     if (!sourceManifest || (handoff.sourceManifestId && sourceManifest.manifestId !== handoff.sourceManifestId)) {
       sourceManifest = await captureProjectManifest(folder, (message) => reportBrowserProgress(api, token, progress, message));
     }
@@ -799,6 +807,7 @@ async function stageRequestedBrowserManifest(
 ): Promise<void> {
   try {
     const manifest = await captureProjectManifest(workspace, (message) => progress.report({ message }));
+    await persistWorkspaceSourceManifest(api.globalStoragePath, token, manifest);
     await api.markEditorManifestReady(token, {
       manifestId: manifest.manifestId,
       digest: manifest.digest,
@@ -826,6 +835,23 @@ async function captureProjectManifest(
   const manifest = await captureWorkspaceSourceManifest(workspace.fsPath, excluded);
   await report(`Project manifest sealed with ${manifest.entryCount} objects`);
   return manifest;
+}
+
+async function loadStagedBrowserManifest(
+  api: ChatDevApi,
+  token: string,
+  expectedManifestId?: string | null,
+): Promise<WorkspaceSourceManifest | undefined> {
+  const inMemory = stagedBrowserManifests.get(token);
+  if (inMemory && (!expectedManifestId || inMemory.manifestId === expectedManifestId)) return inMemory;
+  const persisted = await readWorkspaceSourceManifest(api.globalStoragePath, token, expectedManifestId);
+  if (persisted) stagedBrowserManifests.set(token, persisted);
+  return persisted;
+}
+
+async function discardStagedBrowserManifest(api: ChatDevApi, token: string): Promise<void> {
+  stagedBrowserManifests.delete(token);
+  await deleteWorkspaceSourceManifest(api.globalStoragePath, token);
 }
 
 async function openAgentPage(api: ChatDevApi, agent: Agent): Promise<void> {
@@ -1022,4 +1048,5 @@ async function forgetBrowserHandoff(api: ChatDevApi, token: string): Promise<voi
   await api.globalState.update(PENDING_BROWSER_HANDOFFS_KEY, stored.filter((item) => !(
     item.serverUrl === api.serverUrl && item.token === token
   )));
+  await discardStagedBrowserManifest(api, token);
 }
