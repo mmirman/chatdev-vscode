@@ -33,34 +33,40 @@ export async function captureWorkspaceSourceManifest(
 ): Promise<WorkspaceSourceManifest> {
   const root = path.resolve(workspacePath);
   const excluded = new Set(excludedNames);
+  const withIoSlot = createLimiter(64);
   const snapshotStartedAt = new Date().toISOString();
   const entries: WorkspaceSourceManifestEntry[] = [];
 
   const visit = async (absoluteDirectory: string, relativeDirectory: string): Promise<void> => {
-    const children = await fs.readdir(absoluteDirectory, { withFileTypes: true });
+    const children = await withIoSlot(() => fs.readdir(absoluteDirectory, { withFileTypes: true }));
     children.sort((left, right) => left.name.localeCompare(right.name));
-    for (const child of children) {
+    const inspected = await Promise.all(children.map(async (child) => {
       const relativePath = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name;
-      if (ignoredWorkspacePath(relativePath, excluded)) continue;
+      if (ignoredWorkspacePath(relativePath, excluded)) return null;
       const absolutePath = path.join(absoluteDirectory, child.name);
       let metadata: Awaited<ReturnType<typeof fs.lstat>>;
       try {
-        metadata = await fs.lstat(absolutePath);
+        metadata = await withIoSlot(() => fs.lstat(absolutePath));
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
       }
       if (metadata.isDirectory()) {
-        entries.push(sourceEntry(relativePath, "directory", metadata));
-        await visit(absolutePath, relativePath);
-      } else if (metadata.isFile()) {
-        entries.push(sourceEntry(relativePath, "file", metadata));
-      } else if (metadata.isSymbolicLink()) {
-        const target = await fs.readlink(absolutePath);
-        if (!portableSymlink(root, absolutePath, target)) continue;
-        entries.push(sourceEntry(relativePath, "symlink", metadata, target));
+        return { entry: sourceEntry(relativePath, "directory", metadata), directory: { absolutePath, relativePath } };
       }
+      if (metadata.isFile()) return { entry: sourceEntry(relativePath, "file", metadata) };
+      if (!metadata.isSymbolicLink()) return null;
+      const target = await withIoSlot(() => fs.readlink(absolutePath));
+      if (!portableSymlink(root, absolutePath, target)) return null;
+      return { entry: sourceEntry(relativePath, "symlink", metadata, target) };
+    }));
+    const directories: Array<{ absolutePath: string; relativePath: string }> = [];
+    for (const item of inspected) {
+      if (!item) continue;
+      entries.push(item.entry);
+      if (item.directory) directories.push(item.directory);
     }
+    await Promise.all(directories.map((directory) => visit(directory.absolutePath, directory.relativePath)));
   };
 
   await visit(root, "");
@@ -122,4 +128,19 @@ function portableSymlink(root: string, absolutePath: string, target: string): bo
 
 function hash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function createLimiter(maxConcurrent: number): <T>(operation: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (active >= maxConcurrent) await new Promise<void>((resolve) => waiting.push(resolve));
+    active += 1;
+    try {
+      return await operation();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
 }
