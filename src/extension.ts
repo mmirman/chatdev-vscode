@@ -8,6 +8,7 @@ import {
   openAgentPickerInBrowser,
   openAgentWorkspace,
   pickAndOpenAgent,
+  resumePendingContinuations,
 } from "./commands";
 import { ChatDevFileSystem } from "./remote-filesystem";
 import { AgentTerminal, ShellTerminal } from "./terminals";
@@ -85,6 +86,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await refreshUi();
         return;
       }
+      await resumePendingContinuations(api);
       await restoreWorkspaceMirrors(api);
       await restoreWorkspaceSessionDiscoveries(api);
       await refreshUi();
@@ -114,6 +116,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void recoverDeletedRemoteWorkspace(api).then(async (available) => {
         if (!available) return;
+        await resumePendingContinuations(api);
         await restoreWorkspaceMirrors(api);
         await restoreWorkspaceSessionDiscoveries(api);
         const agentId = currentAgentId();
@@ -125,6 +128,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!state.focused) return;
       void recoverDeletedRemoteWorkspace(api).then(async (available) => {
         if (!available) return;
+        await resumePendingContinuations(api);
         await restoreWorkspaceMirrors(api);
         await restoreWorkspaceSessionDiscoveries(api);
         await refreshUi();
@@ -134,6 +138,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const remoteWorkspaceAvailable = await recoverDeletedRemoteWorkspace(api);
   if (remoteWorkspaceAvailable) {
+    await resumePendingContinuations(api);
     await restoreWorkspaceMirrors(api);
     await restoreWorkspaceSessionDiscoveries(api);
   }

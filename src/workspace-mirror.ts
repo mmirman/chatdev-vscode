@@ -26,7 +26,13 @@ export async function startWorkspaceMirror(api: ChatDevApi, agentId: string, wor
   const mirror = new WorkspaceMirror(api, agentId, workspace);
   active.set(key, mirror);
   await rememberMirror(api, agentId, workspacePath);
-  await mirror.start();
+  try {
+    await mirror.start();
+  } catch (error) {
+    mirror.dispose();
+    if (active.get(key) === mirror) active.delete(key);
+    throw error;
+  }
 }
 
 export async function restoreWorkspaceMirrors(api: ChatDevApi): Promise<void> {
@@ -86,6 +92,7 @@ class WorkspaceMirror implements vscode.Disposable {
   private watcher: vscode.FileSystemWatcher | undefined;
   private documentSubscription: vscode.Disposable | undefined;
   private readonly documentTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly documentVersions = new Map<string, number>();
   private readonly suppressed = new Map<string, SuppressedRemoteWrite>();
   private readonly locallyPushed = new Map<string, { hash: string; until: number }>();
   private readonly pathQueues = new Map<string, Promise<void>>();
@@ -130,6 +137,7 @@ class WorkspaceMirror implements vscode.Disposable {
     this.documentSubscription = undefined;
     for (const timer of this.documentTimers.values()) clearTimeout(timer);
     this.documentTimers.clear();
+    this.documentVersions.clear();
     this.socket?.disconnect();
     this.socket = undefined;
     this.pathQueues.clear();
@@ -156,9 +164,11 @@ class WorkspaceMirror implements vscode.Disposable {
     if (expected?.kind === "file" && expected.until > Date.now() && expected.hash === hash(contents)) return;
     const previous = this.documentTimers.get(relativePath);
     if (previous) clearTimeout(previous);
+    const version = (this.documentVersions.get(relativePath) || 0) + 1;
+    this.documentVersions.set(relativePath, version);
     const timer = setTimeout(() => {
       this.documentTimers.delete(relativePath);
-      this.enqueue(relativePath, () => this.pushLocalDocument(relativePath, document));
+      this.enqueue(relativePath, () => this.pushLocalDocument(relativePath, document, version));
     }, 120);
     this.documentTimers.set(relativePath, timer);
   }
@@ -193,8 +203,9 @@ class WorkspaceMirror implements vscode.Disposable {
     this.rememberLocalPush(relativePath, data);
   }
 
-  private async pushLocalDocument(relativePath: string, document: vscode.TextDocument): Promise<void> {
+  private async pushLocalDocument(relativePath: string, document: vscode.TextDocument, version: number): Promise<void> {
     if (this.disposed || document.isClosed) return;
+    if (this.documentVersions.get(relativePath) !== version) return;
     const data = Buffer.from(document.getText(), "utf8");
     if (data.byteLength > 5 * 1024 * 1024 || this.wasJustPushed(relativePath, data)) return;
     const expected = this.suppressed.get(relativePath);
@@ -212,6 +223,8 @@ class WorkspaceMirror implements vscode.Disposable {
 
   private async pullRemotePath(relativePath: string): Promise<void> {
     if (this.disposed) return;
+    if (this.documentTimers.has(relativePath)) return;
+    const documentVersion = this.documentVersions.get(relativePath) || 0;
     const uri = vscode.Uri.joinPath(this.root, ...relativePath.split("/"));
     const stat = await this.rpc("stat_path", { path: relativePath }, true);
     if (!stat.ok) {
@@ -229,6 +242,7 @@ class WorkspaceMirror implements vscode.Disposable {
     }
     const file = await this.rpc("read_file", { path: relativePath });
     const contents = Buffer.from(String(file.dataBase64 || ""), "base64");
+    if (this.documentTimers.has(relativePath) || (this.documentVersions.get(relativePath) || 0) !== documentVersion) return;
     const pushed = this.locallyPushed.get(relativePath);
     if (pushed && pushed.until > Date.now() && pushed.hash === hash(contents)) {
       this.locallyPushed.delete(relativePath);

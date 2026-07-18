@@ -10,13 +10,22 @@ import { continuationFailureMessage, isAgentNotFoundError, replacementAgentName 
 import { currentMirroredAgentId, startWorkspaceMirror } from "./workspace-mirror";
 
 const activeBrowserTransfers = new Set<string>();
+const activePendingResumes = new Set<string>();
 const PENDING_CONTINUATIONS_KEY = "chatdev.pendingContinuations";
+const PENDING_BROWSER_HANDOFFS_KEY = "chatdev.pendingBrowserHandoffs";
 
 type PendingContinuation = {
   serverUrl: string;
   workspacePath: string;
   agentId: string;
   settings: ContinuePanelSettings;
+};
+
+type PendingBrowserHandoff = {
+  serverUrl: string;
+  token: string;
+  workspacePath: string;
+  expiresAt: string;
 };
 
 export async function continueCurrentProjectInEditor(api: ChatDevApi): Promise<void> {
@@ -120,6 +129,7 @@ export async function continueCurrentProjectInBrowser(api: ChatDevApi): Promise<
     projectPath: folder.uri.fsPath,
     conversations,
   });
+  await rememberBrowserHandoff(api, handoff.token, folder.uri.fsPath, handoff.expiresAt);
   const opened = await vscode.env.openExternal(vscode.Uri.parse(handoff.browserUrl));
   if (!opened) throw new Error("Could not open chat.dev in your browser.");
 
@@ -130,7 +140,10 @@ export async function continueCurrentProjectInBrowser(api: ChatDevApi): Promise<
   }, async (progress) => {
     while (Date.now() < Date.parse(handoff.expiresAt)) {
       const state = await api.getEditorHandoff(handoff.token);
-      if (state.status === "complete") return;
+      if (state.status === "complete") {
+        await forgetBrowserHandoff(api, handoff.token);
+        return;
+      }
       if (state.status === "failed") throw new Error(continuationFailureMessage(state.error || "The project connection stopped."));
       if (state.agentId && handoffDefaultSessionId(state) && ["selected", "retry_requested"].includes(state.status)) {
         await transferBrowserHandoff(api, handoff.token, state, folder.uri, sessions, progress);
@@ -183,6 +196,7 @@ export async function continueCursorSessionInBrowser(
     projectPath: folder.uri.fsPath,
     conversations,
   });
+  await rememberBrowserHandoff(api, handoff.token, folder.uri.fsPath, handoff.expiresAt);
   const opened = await vscode.env.openExternal(vscode.Uri.parse(handoff.browserUrl));
   if (!opened) await vscode.env.clipboard.writeText(handoff.browserUrl);
   void vscode.window.showInformationMessage(
@@ -202,6 +216,7 @@ export async function continueCursorSessionInBrowser(
     while (Date.now() < Date.parse(handoff.expiresAt)) {
       const state = await api.getEditorHandoff(handoff.token);
       if (state.status === "complete" && state.agentId) {
+        await forgetBrowserHandoff(api, handoff.token);
         const agent = await api.getAgent(state.agentId);
         const remote = (await api.listAgentThreads(agent)).find((thread) => (
           thread.sourceProvider === "cursor" && thread.sourceSessionId === cursorSessionId
@@ -264,6 +279,85 @@ export async function resumeBrowserHandoff(api: ChatDevApi, token: string, exist
   }, (progress) => transferBrowserHandoff(api, token, handoff, folder, sessions, progress));
 }
 
+export async function resumePendingContinuations(api: ChatDevApi): Promise<void> {
+  if (!(await api.isSignedIn())) return;
+  const folders = (vscode.workspace.workspaceFolders || []).filter((folder) => folder.uri.scheme === "file");
+  const openPaths = new Map(folders.map((folder) => [path.resolve(folder.uri.fsPath), folder]));
+
+  const native = api.globalState.get<PendingContinuation[]>(PENDING_CONTINUATIONS_KEY, []);
+  for (const pending of native) {
+    if (pending.serverUrl !== api.serverUrl) continue;
+    const folder = openPaths.get(path.resolve(pending.workspacePath));
+    if (!folder) continue;
+    const key = `${api.serverUrl}:${path.resolve(pending.workspacePath)}`;
+    if (activePendingResumes.has(key)) continue;
+    activePendingResumes.add(key);
+    try {
+      const agent = await api.getAgent(pending.agentId);
+      if (agent.status === "deleted") {
+        await clearPendingContinuation(api, folder.uri.fsPath, agent.id);
+        continue;
+      }
+      const sessions = await discoverLocalSessions(folder.uri);
+      if (!sessions.some((session) => session.sessionId === continuationDefaultSessionId(pending.settings))) continue;
+      const credentials = await findCredentialsForSessions(sessions);
+      const ready = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `Finishing ${folder.name} on chat.dev`,
+        cancellable: false,
+      }, async (progress) => prepareRemoteContinuation(
+        api,
+        folder,
+        sessions,
+        credentials,
+        pending.settings,
+        (message) => progress.report({ message }),
+        agent,
+      ));
+      await clearPendingContinuation(api, folder.uri.fsPath, ready.id);
+      await startWorkspaceMirror(api, ready.id, folder.uri);
+      await startWorkspaceSessionDiscovery(api, ready.id, folder.uri);
+      void vscode.window.showInformationMessage(`${folder.name} is connected to ${ready.name} on chat.dev.`);
+    } catch (error) {
+      if (isAgentNotFoundError(error)) {
+        await clearPendingContinuation(api, folder.uri.fsPath, pending.agentId);
+      } else {
+        console.warn(`[chat.dev] Pending project connection will retry for ${folder.name}:`, error);
+      }
+    } finally {
+      activePendingResumes.delete(key);
+    }
+  }
+
+  const browser = api.globalState.get<PendingBrowserHandoff[]>(PENDING_BROWSER_HANDOFFS_KEY, []);
+  for (const pending of browser) {
+    if (pending.serverUrl !== api.serverUrl) continue;
+    const folder = openPaths.get(path.resolve(pending.workspacePath));
+    if (!folder || activeBrowserTransfers.has(pending.token)) continue;
+    if (Date.parse(pending.expiresAt) <= Date.now()) {
+      await forgetBrowserHandoff(api, pending.token);
+      continue;
+    }
+    try {
+      const handoff = await api.getEditorHandoff(pending.token);
+      if (handoff.status === "complete") {
+        await forgetBrowserHandoff(api, pending.token);
+        continue;
+      }
+      if (!handoff.agentId || !handoffDefaultSessionId(handoff) || handoff.agentAvailable === false) continue;
+      const sessions = await discoverLocalSessions(folder.uri);
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `Finishing ${folder.name} on chat.dev`,
+        cancellable: false,
+      }, (progress) => transferBrowserHandoff(api, pending.token, handoff, folder.uri, sessions, progress));
+    } catch (error) {
+      if ((error as Error & { status?: number }).status === 404) await forgetBrowserHandoff(api, pending.token);
+      else console.warn(`[chat.dev] Browser project connection will retry for ${folder.name}:`, error);
+    }
+  }
+}
+
 async function transferBrowserHandoff(
   api: ChatDevApi,
   token: string,
@@ -302,8 +396,7 @@ async function transferBrowserHandoff(
     agent = await api.getAgent(agent.id);
 
     await attachCodingSessions(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
-    await startWorkspaceMirror(api, agent.id, folder);
-    await startWorkspaceSessionDiscovery(api, agent.id, folder);
+    await writeEditorConnectionState(api, agent, folder, "uploading", sessions.length);
 
     const entries = await collectEntries(folder, excludedDirectoryNames());
     const editorState = captureEditorState(folder);
@@ -313,8 +406,13 @@ async function transferBrowserHandoff(
       await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
     });
     await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(editorState, null, 2)));
+    await writeEditorConnectionState(api, agent, folder, "complete", sessions.length);
+    await startSessionSyncs(api, agent, remoteSessions);
+    await startWorkspaceMirror(api, agent.id, folder);
+    await startWorkspaceSessionDiscovery(api, agent.id, folder);
 
     await api.updateEditorHandoff(token, { status: "complete", progressMessage: `Project and ${sessions.length} sessions ready`, error: null });
+    await forgetBrowserHandoff(api, token);
     void vscode.window.showInformationMessage(`${handoff.projectName || "Project"} and ${sessions.length} session${sessions.length === 1 ? "" : "s"} now mirror ${agent.name} on chat.dev.`, "Open agent").then((choice) => {
       if (choice === "Open agent") void openAgentPage(api, agent);
     });
@@ -496,8 +594,7 @@ async function prepareRemoteContinuation(
   agent = await api.getAgent(agent.id);
 
   await attachCodingSessions(api, agent, remoteSessions, report);
-  await startWorkspaceMirror(api, agent.id, folder.uri);
-  await startWorkspaceSessionDiscovery(api, agent.id, folder.uri);
+  await writeEditorConnectionState(api, agent, folder.uri, "uploading", sessions.length);
 
   const excludes = excludedDirectoryNames();
   const entries = await collectEntries(folder.uri, excludes);
@@ -507,6 +604,8 @@ async function prepareRemoteContinuation(
   await report(`Packaging ${entries.length} project items`);
   await uploadWorkspace(api, agent.id, folder.uri, entries, excludes, progress, report);
   await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(captureEditorState(folder.uri), null, 2)));
+  await writeEditorConnectionState(api, agent, folder.uri, "complete", sessions.length);
+  await startSessionSyncs(api, agent, remoteSessions);
   return agent;
 }
 
@@ -642,6 +741,11 @@ async function attachCodingSessions(
       data: await readSession(local),
       referenceOnly: local.provider === "cursor",
     });
+  }
+}
+
+async function startSessionSyncs(api: ChatDevApi, agent: Agent, sessions: RemoteSession[]): Promise<void> {
+  for (const { local, remote } of sessions) {
     await startSessionTranscriptSync(api, agent.id, remote.id, local);
   }
 }
@@ -663,9 +767,24 @@ async function openAgentPage(api: ChatDevApi, agent: Agent): Promise<void> {
 }
 
 export async function ensureRunning(api: ChatDevApi, agent: Agent): Promise<void> {
-  if (agent.status === "running") return;
-  if (agent.status !== "starting") await api.startAgent(agent.id);
-  await waitUntilRunning(api, agent.id);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const current = await api.getAgent(agent.id);
+    if (current.status === "running") return;
+    try {
+      // startAgent joins a live start and retries a stale "starting" state.
+      // Calling it here avoids waiting three minutes before recovering a
+      // worker connection that was interrupted during startup.
+      await api.startAgent(agent.id);
+      await waitUntilRunning(api, agent.id);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3 && !isAgentNotFoundError(error)) await delay(attempt * 2_000);
+      else break;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("The chat.dev agent could not be started.");
 }
 
 async function waitUntilRunning(api: ChatDevApi, agentId: string): Promise<void> {
@@ -679,6 +798,25 @@ async function waitUntilRunning(api: ChatDevApi, agentId: string): Promise<void>
     }
     throw new Error("The chat.dev agent did not become ready within three minutes.");
   });
+}
+
+async function writeEditorConnectionState(
+  api: ChatDevApi,
+  agent: Agent,
+  folder: vscode.Uri,
+  status: "uploading" | "complete",
+  sessionCount: number,
+): Promise<void> {
+  const state = {
+    version: 1,
+    agentId: agent.id,
+    projectName: path.basename(folder.fsPath),
+    sourceWorkspacePath: folder.fsPath,
+    status,
+    sessionCount,
+    updatedAt: new Date().toISOString(),
+  };
+  await api.writeWorkspaceFile(agent.id, ".chatdev/editor-connection.json", Buffer.from(JSON.stringify(state, null, 2)));
 }
 
 async function openRemoteFolder(agent: Agent): Promise<void> {
@@ -891,5 +1029,21 @@ async function clearPendingContinuation(api: ChatDevApi, workspacePath: string, 
   const stored = api.globalState.get<PendingContinuation[]>(PENDING_CONTINUATIONS_KEY, []);
   await api.globalState.update(PENDING_CONTINUATIONS_KEY, stored.filter((item) => !(
     item.serverUrl === api.serverUrl && item.workspacePath === workspacePath && item.agentId === agentId
+  )));
+}
+
+async function rememberBrowserHandoff(api: ChatDevApi, token: string, workspacePath: string, expiresAt: string): Promise<void> {
+  const stored = api.globalState.get<PendingBrowserHandoff[]>(PENDING_BROWSER_HANDOFFS_KEY, []);
+  const next = [
+    { serverUrl: api.serverUrl, token, workspacePath, expiresAt },
+    ...stored.filter((item) => !(item.serverUrl === api.serverUrl && item.token === token)),
+  ].slice(0, 10);
+  await api.globalState.update(PENDING_BROWSER_HANDOFFS_KEY, next);
+}
+
+async function forgetBrowserHandoff(api: ChatDevApi, token: string): Promise<void> {
+  const stored = api.globalState.get<PendingBrowserHandoff[]>(PENDING_BROWSER_HANDOFFS_KEY, []);
+  await api.globalState.update(PENDING_BROWSER_HANDOFFS_KEY, stored.filter((item) => !(
+    item.serverUrl === api.serverUrl && item.token === token
   )));
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- Resume unfinished project connections after Cursor, VS Code, agent, or worker restarts.
+- Start live file and conversation mirroring only after the initial workspace and session transfer completes.
+- Keep newer unsaved editor text from being overwritten by delayed remote file events.
+- Recover stale agent startup attempts without waiting for the previous attempt to time out.
+
 ## 0.1.0
 
 - Continue local Cursor, Codex, and Claude Code projects on a chat.dev agent while preserving detected conversations, models, harnesses, and session names.
