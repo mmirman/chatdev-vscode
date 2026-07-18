@@ -14,14 +14,20 @@ import {
   type RemoteWorkspaceEntry,
   WorkspaceSyncJournal,
 } from "./workspace-sync-journal";
+import {
+  captureWorkspaceSourceManifest,
+  INTERNAL_TEMP_PREFIX,
+  ignoredWorkspacePath,
+  PARTIAL_SUFFIX,
+  SYNC_MANIFEST,
+  type WorkspaceSourceManifest,
+} from "./workspace-source-manifest";
 
 const STORAGE_KEY = "chatdev.workspaceMirrors";
 const CLIENT_ID_KEY = "chatdev.workspaceSyncClientId";
-const SYNC_MANIFEST = ".chatdev-sync-manifest.json";
-const PARTIAL_SUFFIX = ".chatdev-downloading";
-const INTERNAL_TEMP_PREFIX = ".chatdev-sync-part-";
 const SMALL_FILE_LIMIT = 1024 * 1024;
 const TRANSFER_CHUNK_SIZE = 512 * 1024;
+const MANIFEST_CHUNK_SIZE = 1_000;
 const OUTBOX_CONCURRENCY = 3;
 const CHANGE_POLL_MS = 2_000;
 const RECONCILE_MS = 5 * 60_000;
@@ -35,6 +41,7 @@ type StoredMirror = {
 
 type StartOptions = {
   initialSync?: boolean;
+  sourceManifest?: WorkspaceSourceManifest;
   report?: (message: string) => void | Promise<void>;
 };
 
@@ -53,6 +60,8 @@ type SyncStatus = RpcResult & {
   phase: "idle" | "syncing" | "live";
   cursor: number;
   manifest?: string | null;
+  sourceManifestId?: string | null;
+  sourceManifestSealed?: boolean;
 };
 
 type ManifestResult = {
@@ -160,6 +169,7 @@ class WorkspaceMirror implements vscode.Disposable {
   private remoteDrainEnabled = false;
   private disposed = false;
   private lastConflictNotice = 0;
+  private sourceManifest: WorkspaceSourceManifest | undefined;
 
   constructor(
     private readonly api: ChatDevApi,
@@ -181,6 +191,10 @@ class WorkspaceMirror implements vscode.Disposable {
       workspacePath: this.workspacePath,
       clientId,
     });
+    this.sourceManifest = options.sourceManifest || this.journal.sourceManifest;
+    if (options.sourceManifest && this.journal.sourceManifest?.manifestId !== options.sourceManifest.manifestId) {
+      await this.journal.setSourceManifest(options.sourceManifest);
+    }
     this.socket = await this.api.connectSocket();
     this.installSocketListeners();
     this.installLocalListeners();
@@ -267,6 +281,16 @@ class WorkspaceMirror implements vscode.Disposable {
       await this.journal.setGeneration(`generation-${crypto.randomUUID()}`);
       activeStatus = await this.beginGeneration(status.generation);
       beganGeneration = true;
+    } else if (options.sourceManifest
+      && status.sourceManifestSealed
+      && status.sourceManifestId !== options.sourceManifest.manifestId) {
+      await this.journal.setGeneration(`generation-${crypto.randomUUID()}`);
+      activeStatus = await this.beginGeneration(status.generation);
+      beganGeneration = true;
+    } else if (!status.sourceManifestSealed) {
+      await this.journal.setGeneration(`generation-${crypto.randomUUID()}`);
+      activeStatus = await this.beginGeneration(status.generation);
+      beganGeneration = true;
     } else if (status.phase === "syncing") {
       await this.journal.markSyncing();
       activeStatus = await this.beginGeneration();
@@ -274,10 +298,13 @@ class WorkspaceMirror implements vscode.Disposable {
       await this.journal.markLive(status.cursor);
     }
 
-    this.protocolReady = true;
     if (activeStatus.phase === "syncing" || beganGeneration || this.journal.phase === "syncing") {
+      const sourceManifest = await this.ensureSourceManifest(options.report);
+      await this.registerSourceManifest(activeStatus, sourceManifest, options.report);
+      this.protocolReady = true;
       await this.performInitialSync(activeStatus.cursor, options.report);
     } else {
+      this.protocolReady = true;
       this.remoteDrainEnabled = true;
       await this.reconcileRemoteManifest();
       await this.scanLocalWorkspace();
@@ -286,6 +313,54 @@ class WorkspaceMirror implements vscode.Disposable {
       this.scheduleRemoteDrain();
     }
     this.startPollers();
+  }
+
+  private async ensureSourceManifest(report?: (message: string) => void | Promise<void>): Promise<WorkspaceSourceManifest> {
+    if (this.sourceManifest) {
+      if (this.journal.sourceManifest?.manifestId !== this.sourceManifest.manifestId) {
+        await this.journal.setSourceManifest(this.sourceManifest);
+      }
+      return this.sourceManifest;
+    }
+    await safeReport(report, "Creating the complete project manifest before copying files");
+    const manifest = await captureWorkspaceSourceManifest(this.workspacePath, configuredUploadExcludes());
+    this.sourceManifest = manifest;
+    await this.journal.setSourceManifest(manifest);
+    return manifest;
+  }
+
+  private async registerSourceManifest(
+    status: SyncStatus,
+    manifest: WorkspaceSourceManifest,
+    report?: (message: string) => void | Promise<void>,
+  ): Promise<void> {
+    if (status.sourceManifestSealed && status.sourceManifestId === manifest.manifestId) return;
+    await safeReport(report, `Registering ${manifest.entryCount} project objects before copying files`);
+    await this.rpc("workspace_sync_source_manifest_begin", {
+      generation: this.journal.generation,
+      clientId: this.journal.clientId,
+      manifestId: manifest.manifestId,
+      snapshotStartedAt: manifest.snapshotStartedAt,
+      capturedAt: manifest.capturedAt,
+      entryCount: manifest.entryCount,
+      digest: manifest.digest,
+    });
+    for (let offset = 0; offset < manifest.entries.length; offset += MANIFEST_CHUNK_SIZE) {
+      await this.rpc("workspace_sync_source_manifest_append", {
+        generation: this.journal.generation,
+        clientId: this.journal.clientId,
+        manifestId: manifest.manifestId,
+        offset,
+        entries: manifest.entries.slice(offset, offset + MANIFEST_CHUNK_SIZE),
+      });
+    }
+    await this.rpc("workspace_sync_source_manifest_seal", {
+      generation: this.journal.generation,
+      clientId: this.journal.clientId,
+      manifestId: manifest.manifestId,
+      entryCount: manifest.entryCount,
+      digest: manifest.digest,
+    });
   }
 
   private async beginGeneration(expectedGeneration?: string): Promise<SyncStatus> {
@@ -890,13 +965,7 @@ class WorkspaceMirror implements vscode.Disposable {
   }
 
   private ignored(relativePath: string): boolean {
-    const segments = relativePath.split(/[\\/]/).filter(Boolean);
-    const configured = new Set(vscode.workspace.getConfiguration("chatdev").get<string[]>("uploadExcludes", []));
-    return relativePath === SYNC_MANIFEST
-      || segments.some((segment) => segment === ".chatdev"
-        || segment.endsWith(PARTIAL_SUFFIX)
-        || segment.startsWith(INTERNAL_TEMP_PREFIX)
-        || configured.has(segment));
+    return ignoredWorkspacePath(relativePath, configuredUploadExcludes());
   }
 
   private async portableSymlink(absolutePath: string): Promise<boolean> {
@@ -1085,4 +1154,8 @@ function delay(ms: number): Promise<void> {
 
 function unrefTimer(timer: ReturnType<typeof setInterval>): void {
   if (typeof (timer as { unref?: () => void }).unref === "function") (timer as { unref: () => void }).unref();
+}
+
+function configuredUploadExcludes(): Set<string> {
+  return new Set(vscode.workspace.getConfiguration("chatdev").get<string[]>("uploadExcludes", []));
 }

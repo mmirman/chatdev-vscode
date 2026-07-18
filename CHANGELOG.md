@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Seal a complete timestamped project manifest before transferring the first workspace object.
+- Keep the expected-object snapshot in `.chatdev-sync-manifest.json` and mutable transfer progress in `.chatdev-sync-status.json`.
+- Start workspace copying alongside conversation import instead of making either phase wait for the other.
+- Retain remote file notifications through autosave races so the chat.dev editor refreshes clean files and automatically rebases pending text edits.
+
 ## 0.1.2
 
 - Start the remote harness immediately and make each project object available as soon as that object is synchronized.

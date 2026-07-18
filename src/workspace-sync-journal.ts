@@ -1,6 +1,7 @@
 import * as crypto from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
+import type { WorkspaceSourceManifest } from "./workspace-source-manifest";
 
 export type RemoteWorkspaceEntry = {
   type: "file" | "directory" | "symlink";
@@ -76,6 +77,7 @@ type PersistedJournal = {
   operations: Record<string, PendingWorkspaceOperation[]>;
   nextInboundId: number;
   inboundChanges: PendingRemoteWorkspaceChange[];
+  sourceManifest?: WorkspaceSourceManifest;
   updatedAt: string;
 };
 
@@ -153,6 +155,9 @@ export class WorkspaceSyncJournal {
   get lastLocalVersion(): number { return this.state.nextVersion - 1; }
   get lastAppliedVersion(): number { return this.state.highestRemoteVersion; }
   get remoteManifestLoaded(): boolean { return this.state.remoteManifestLoaded; }
+  get sourceManifest(): WorkspaceSourceManifest | undefined {
+    return this.state.sourceManifest ? structuredClone(this.state.sourceManifest) : undefined;
+  }
 
   known(path: string): RemoteWorkspaceEntry | undefined {
     return this.state.knownRemote[path];
@@ -198,6 +203,13 @@ export class WorkspaceSyncJournal {
     this.state.operations = {};
     this.state.inboundChanges = [];
     this.state.highestRemoteVersion = 0;
+    this.state.sourceManifest = undefined;
+    await this.persist();
+  }
+
+  async setSourceManifest(manifest: WorkspaceSourceManifest): Promise<void> {
+    this.state.sourceManifest = structuredClone(manifest);
+    for (const entry of manifest.entries) this.state.managedPaths[entry.path] = true;
     await this.persist();
   }
 

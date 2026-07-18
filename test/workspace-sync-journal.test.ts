@@ -29,6 +29,32 @@ test("persists an inflight operation and resumes it as queued with the original 
   assert.equal(reopened.nextReadyOperations(1)[0]?.opId, operation.opId);
 });
 
+test("persists the sealed source manifest and turns post-snapshot removals into operations", async (t) => {
+  const value = await fixture(t);
+  const manifest = {
+    version: 1 as const,
+    manifestId: "manifest-test-source",
+    snapshotStartedAt: "2026-07-18T00:00:00.000Z",
+    capturedAt: "2026-07-18T00:00:00.001Z",
+    entryCount: 1,
+    digest: "a".repeat(64),
+    entries: [{
+      path: "removed-after-snapshot.txt",
+      kind: "file" as const,
+      size: 4,
+      mode: 0o644,
+      modifiedAtMs: 1_700_000_000_000,
+      sourceRevision: "source:test",
+    }],
+  };
+  await value.journal.setSourceManifest(manifest);
+  const reopened = await WorkspaceSyncJournal.open(value.input);
+  assert.equal(reopened.sourceManifest?.manifestId, manifest.manifestId);
+  await reopened.queueManagedDeletions(new Set(), () => false);
+  await reopened.replaceRemoteManifest([], 0);
+  assert.equal(reopened.nextReadyOperations(1)[0]?.path, "removed-after-snapshot.txt");
+});
+
 test("does not release local operations until a remote baseline is durable", async (t) => {
   const { journal } = await fixture(t);
   const operation = await journal.enqueue({ path: "README.md" });

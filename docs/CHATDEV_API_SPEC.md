@@ -634,9 +634,11 @@ The remote shell is separate from the coding-agent interface but uses the same m
 
 ## Progressive workspace sync
 
-Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. The harness starts first and remains operable while files arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
+Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. As soon as agent creation begins, the extension lists the complete local workspace using path metadata without reading large file bodies. It sends and seals that inventory before the worker accepts the first object transfer. The harness remains operable while later file bodies arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
 
-`workspace_sync_begin` creates `/workspace/.chatdev-sync-manifest.json`. This file is a human- and machine-readable projection of the worker's durable journal. It reports the generation, `syncing` or `complete` status, discovery state, object counts, latest local version, remote change cursor, timestamps, and active downloads. It remains after `workspace_sync_complete`, which records `discoveryComplete: true` only after the extension has received a durable acknowledgement for every object observed during the first pass. `status` is `syncing` whenever discovery or a later live file transfer is active, and returns to `complete` when no file is partial. Worker or editor restarts retain the manifest and both journals, so the same generation resumes.
+Sealing atomically creates `/workspace/.chatdev-sync-manifest.json`. This is an immutable logical snapshot containing `manifestId`, `generation`, `snapshotStartedAt`, `capturedAt`, entry count, digest, and the sorted list of every expected file, directory, and symlink with its source revision and metadata. The file is never exposed as a partially discovered path list. Changes observed after `capturedAt` use the normal append-only per-path journal and do not mutate the historical snapshot.
+
+Mutable progress lives in `/workspace/.chatdev-sync-status.json`, which reports `syncing` or `complete`, discovery state, expected and acknowledged counts, latest local version, remote change cursor, timestamps, and active downloads. It remains after `workspace_sync_complete`, which records `discoveryComplete: true` only after the extension has received a durable acknowledgement for every object observed during the transfer pass. Worker or editor restarts retain the sealed manifest, progress, and both journals, so the same generation resumes.
 
 Incomplete file content is written to the deterministic sibling `<path>.chatdev-downloading`. The target `<path>` is left unchanged or absent until all bytes match the declared size and SHA-256, then the completed sibling is atomically installed at the target. A worker restart changes any retained `activeDownloads` entry to `interrupted`; retrying that path replaces the stale partial content.
 
@@ -644,13 +646,16 @@ Incomplete file content is written to the deterministic sibling `<path>.chatdev-
 
 | Event | Request fields after `agentId` | What the worker returns or does |
 | --- | --- | --- |
-| `workspace_sync_status` | none | Active `generation`, owning `clientId`, `phase`, change `cursor`, and sync manifest name |
-| `workspace_sync_begin` | `generation`, `clientId`, optional `expectedGeneration` | Claims or resumes a generation and writes the persistent sync manifest |
-| `workspace_sync_manifest` | optional `afterPath`, `limit`, `reconcile` | A lexicographically paged path/revision manifest and its current cursor |
+| `workspace_sync_status` | none | Active generation, owner, phase, cursor, sealed source-manifest identity, and progress filename |
+| `workspace_sync_begin` | `generation`, `clientId`, optional `expectedGeneration` | Claims or resumes a generation; object transfers remain disabled |
+| `workspace_sync_source_manifest_begin` | manifest identity, timestamps, entry count, digest | Starts or idempotently resumes receipt of one complete source snapshot |
+| `workspace_sync_source_manifest_append` | manifest identity, ordered `offset`, up to 2,000 entries | Persists one idempotent sorted manifest chunk without transferring workspace objects |
+| `workspace_sync_source_manifest_seal` | manifest identity, entry count, digest | Verifies the full list, atomically writes `.chatdev-sync-manifest.json`, and enables object transfer |
+| `workspace_sync_manifest` | optional `afterPath`, `limit`, `reconcile` | The separate lexicographically paged inventory of objects currently on the remote workspace and its cursor |
 | `workspace_sync_changes` | `cursor`, optional `limit` | Ordered changes after the cursor, or `rescanRequired: true` when the retained log no longer reaches it |
 | `workspace_sync_complete` | `generation`, `clientId`, `lastLocalVersion`, `discoveredObjectCount` | Verifies that version was applied, requires no active downloads, switches to `live`, and records completed discovery in the manifest |
 
-The extension captures the cursor before reading a paged manifest, then consumes every change after that cursor. If a watcher notification or retained cursor is lost, it requests `workspace_sync_manifest` with `reconcile: true`, compares revisions, and continues from the new snapshot cursor.
+The worker rejects `workspace_sync_apply` and `workspace_sync_file_begin` with `workspace_sync_manifest_required` until the complete source manifest is sealed. The extension captures the remote cursor before reading the paged remote inventory, then consumes every change after that cursor. If a watcher notification or retained cursor is lost, it requests `workspace_sync_manifest` with `reconcile: true`, compares revisions, and continues from the new cursor.
 
 ### Apply one object
 
@@ -698,10 +703,10 @@ Downloads in either direction use the deterministic `.chatdev-downloading` sibli
 - The extension persists its outbound operations, inbound events, local versions, per-path server sequence, remote cursor, and generation under VS Code global storage before acknowledging progress.
 - The worker persists its generation, applied operation results, path manifest, and bounded change log on the agent volume.
 - Workspace sync never writes conversation events, Simplify projections, SMS/voice channel state, subscriptions, or session rows.
-- Initial sync is intentionally not a single point-in-time project snapshot. Each object is usable at its acknowledged revision, and the persistent manifest tells the harness whether discovery is still running.
+- The sealed source manifest is the logical point-in-time expected inventory. Each object becomes usable at its acknowledged revision, and edits after `capturedAt` are later append-only operations rather than retroactive manifest changes.
 - An acknowledged delete is a tombstone for that path/version. Restart replay cannot resurrect an older write.
 - File installs and journal writes are atomic. Content hashes, revisions, and server sequences replace time-based echo suppression.
-- The extension mirrors hidden files, `.git`, `node_modules`, modes, empty directories, and relative in-project symlinks unless a matching name is listed in `chatdev.uploadExcludes`. `.chatdev`, `.chatdev-sync-manifest.json`, `.chatdev-downloading` siblings, and internal temporary files are not mirrored back.
+- The extension mirrors hidden files, `.git`, `node_modules`, modes, empty directories, and relative in-project symlinks unless a matching name is listed in `chatdev.uploadExcludes`. `.chatdev`, `.chatdev-sync-manifest.json`, `.chatdev-sync-status.json`, `.chatdev-downloading` siblings, and internal temporary files are not mirrored back.
 
 ## Import and resume each session
 
@@ -789,7 +794,7 @@ The extension then starts the agent. The login is present when the first harness
 - [x] Coding-agent terminal events
 - [x] Independent shell events
 - [x] Durable per-path workspace generations, revisions, and change cursors
-- [x] Progressive initial sync with a persistent machine-readable manifest and explicit partial files
+- [x] Complete sealed source manifest before progressive initial object transfer, with separate status and explicit partial files
 - [x] Idempotent operations, compare-and-swap conflicts, and tombstones
 - [x] Chunked large-file sync and revision-checked remote reads
 - [x] Restart recovery and manifest reconciliation on both sides

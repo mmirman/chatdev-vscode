@@ -97,8 +97,8 @@ VS Code saves those conversations in its normal **Chat sessions** list. They sta
 ## What Continue does
 
 1. **Click Continue.** The extension finds Codex, Claude Code, and Cursor conversations associated with the exact open project and opens its New Agent pane in the editor.
-2. **Choose in the editor.** Select the Default session, machine, disk, model, budget, and provider login, then click **Create new agent**. Its browser page opens while setup continues.
-3. **Keep working.** Files appear on the chat.dev machine one by one, with smaller files sent first. The agent is usable during this first pass. `.chatdev-sync-manifest.json` shows whether discovery is still running or complete, and a `filename.chatdev-downloading` sibling means that file is not ready yet. Git data and every discovered session use the same durable connection, and later edits mirror both ways.
+2. **Choose settings and create the agent.** Select the Default session, machine, disk, model, budget, and provider login. As soon as you click **Create new agent**, the extension lists the complete local project and seals that snapshot before it copies any project object.
+3. **Keep working.** `.chatdev-sync-manifest.json` contains the snapshot timestamp and every file, directory, and symlink expected from that project. Only after the agent acknowledges that complete manifest do files begin appearing, with smaller files sent first. `.chatdev-sync-status.json` shows transfer progress, and a `filename.chatdev-downloading` sibling means that file is not ready yet. The agent remains usable during copying; later edits mirror both ways as changes after the sealed snapshot.
 
 The shortcuts are `Ctrl+Alt+Shift+C` and `Ctrl+Alt+Shift+O` on Windows/Linux or `Cmd+Alt+Shift+C` and `Cmd+Alt+Shift+O` on macOS.
 

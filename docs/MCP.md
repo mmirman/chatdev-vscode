@@ -60,12 +60,13 @@ Editor implementations that mirror an entire local workspace should use the dura
 
 | MCP tool | What it does | Socket.IO event |
 | --- | --- | --- |
-| `chatdev_begin_workspace_sync` | Start or resume one editor generation and create its persistent sync manifest | `workspace_sync_begin` |
-| `chatdev_get_workspace_sync` | Read generation, phase, manifest name, and change cursor | `workspace_sync_status` |
-| `chatdev_get_workspace_manifest` | Page through revisions, optionally reconciling missed watcher events | `workspace_sync_manifest` |
+| `chatdev_begin_workspace_sync` | Start or resume one editor generation with object transfer disabled | `workspace_sync_begin` |
+| `chatdev_send_workspace_manifest` | Send the complete sorted local inventory in chunks and atomically seal it before transferring objects | `workspace_sync_source_manifest_begin/append/seal` |
+| `chatdev_get_workspace_sync` | Read generation, phase, sealed source-manifest identity, progress filename, and change cursor | `workspace_sync_status` |
+| `chatdev_get_remote_workspace_inventory` | Page through current remote revisions, optionally reconciling missed watcher events | `workspace_sync_manifest` |
 | `chatdev_get_workspace_changes` | Read durable changes after a cursor | `workspace_sync_changes` |
 | `chatdev_apply_workspace_object` | Apply one idempotent compare-and-swap file, directory, symlink, or tombstone | `workspace_sync_apply` |
-| `chatdev_complete_workspace_sync` | Confirm discovery, require all active downloads to finish, and mark the manifest complete | `workspace_sync_complete` |
+| `chatdev_complete_workspace_sync` | Confirm transfer discovery, require all active downloads to finish, and mark progress complete | `workspace_sync_complete` |
 
 Large objects use the matching begin/chunk/commit/abort events, with incomplete bytes at `<path>.chatdev-downloading`; remote downloads use revision-checked chunks and the same sibling convention. See the [progressive workspace sync protocol](CHATDEV_API_SPEC.md#progressive-workspace-sync) for complete fields and retry rules.
 

@@ -7,6 +7,7 @@ import { startSessionTranscriptSync, startWorkspaceSessionDiscovery } from "./se
 import { showContinueProjectPanel, type ContinuePanelIntent, type ContinuePanelMachineTier, type ContinuePanelSettings } from "./continue-panel";
 import { continuationFailureMessage, isAgentNotFoundError, replacementAgentName } from "./continuation-state";
 import { currentMirroredAgentId, startWorkspaceMirror } from "./workspace-mirror";
+import { captureWorkspaceSourceManifest, type WorkspaceSourceManifest } from "./workspace-source-manifest";
 
 const activeBrowserTransfers = new Set<string>();
 const activePendingResumes = new Set<string>();
@@ -80,7 +81,8 @@ export async function continueCurrentProjectInEditor(api: ChatDevApi): Promise<v
       }
     }
     validateContinueSettings(selectedSettings, sessions, machineTiers);
-    createdAgent = await prepareRemoteContinuation(api, folder, sessions, credentialsByProvider, selectedSettings, report, createdAgent, async (agent) => {
+    const sourceManifest = await captureProjectManifest(folder.uri, report);
+    createdAgent = await prepareRemoteContinuation(api, folder, sessions, credentialsByProvider, selectedSettings, sourceManifest, report, createdAgent, async (agent) => {
       createdAgent = agent;
       await rememberPendingContinuation(api, folder.uri.fsPath, agent.id, selectedSettings);
       if (!agentPageOpened) {
@@ -148,7 +150,7 @@ export async function continueCurrentProjectInBrowser(api: ChatDevApi): Promise<
         return;
       }
       progress.report({ message: "Choose settings and click Create agent in your browser" });
-      await delay(2_000);
+      await delay(250);
     }
     throw new Error("The browser continuation expired. Start it again from the chat.dev toolbar.");
   });
@@ -230,7 +232,7 @@ export async function continueCursorSessionInBrowser(
         return { agentId: result.agent.id, threadId: remote.remote.id };
       }
       progress.report({ message: "Choose settings and click Create agent in your browser" });
-      await delay(1_000);
+      await delay(250);
     }
     throw new Error("The browser continuation expired. Create the Cursor agent again.");
   });
@@ -303,15 +305,19 @@ export async function resumePendingContinuations(api: ChatDevApi): Promise<void>
         location: vscode.ProgressLocation.Notification,
         title: `Finishing ${folder.name} on chat.dev`,
         cancellable: false,
-      }, async (progress) => prepareRemoteContinuation(
-        api,
-        folder,
-        sessions,
-        credentials,
-        pending.settings,
-        (message) => progress.report({ message }),
-        agent,
-      ));
+      }, async (progress) => {
+        const sourceManifest = await captureProjectManifest(folder.uri, (message) => progress.report({ message }));
+        return prepareRemoteContinuation(
+          api,
+          folder,
+          sessions,
+          credentials,
+          pending.settings,
+          sourceManifest,
+          (message) => progress.report({ message }),
+          agent,
+        );
+      });
       await clearPendingContinuation(api, folder.uri.fsPath, ready.id);
       await startWorkspaceSessionDiscovery(api, ready.id, folder.uri);
       void vscode.window.showInformationMessage(`${folder.name} is connected to ${ready.name} on chat.dev.`);
@@ -367,6 +373,7 @@ async function transferBrowserHandoff(
   activeBrowserTransfers.add(token);
   try {
     sessions = mergeCurrentSessions(sessions, await discoverLocalSessions(folder));
+    const sourceManifest = await captureProjectManifest(folder, (message) => reportBrowserProgress(api, token, progress, message));
     const defaultSessionId = handoffDefaultSessionId(handoff)!;
     const defaultSession = sessions.find((item) => item.sessionId === defaultSessionId);
     if (!defaultSession) throw new Error("The selected Default session is no longer available in this editor.");
@@ -386,22 +393,25 @@ async function transferBrowserHandoff(
       agent.agentRuntime || undefined,
     );
 
-    await importSessionHistories(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
-
     await reportBrowserProgress(api, token, progress, "Starting the chat.dev agent");
     await ensureRunning(api, agent);
     agent = await api.getAgent(agent.id);
-
-    await attachCodingSessions(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
     await writeEditorConnectionState(api, agent, folder, "uploading", sessions.length);
     const editorState = captureEditorState(folder);
-    await startSessionSyncs(api, agent, remoteSessions);
     await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(editorState, null, 2)));
-    await api.updateEditorHandoff(token, { status: "uploading", progressMessage: "Starting progressive project sync" });
-    await startWorkspaceMirror(api, agent.id, folder, { initialSync: true, report: async (message) => {
+    await api.updateEditorHandoff(token, { status: "uploading", progressMessage: "Installing the sealed project manifest" });
+    const workspaceSync = startWorkspaceMirror(api, agent.id, folder, { initialSync: true, sourceManifest, report: async (message) => {
       progress.report({ message });
       await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
     } });
+    await Promise.all([
+      workspaceSync,
+      (async () => {
+        await importSessionHistories(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
+        await attachCodingSessions(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
+        await startSessionSyncs(api, agent, remoteSessions);
+      })(),
+    ]);
     await writeEditorConnectionState(api, agent, folder, "complete", sessions.length);
     await startWorkspaceSessionDiscovery(api, agent.id, folder);
 
@@ -525,6 +535,7 @@ async function prepareRemoteContinuation(
   sessions: LocalAgentSession[],
   credentialsByProvider: Map<LocalAgentSession["provider"], LocalProviderCredentials>,
   settings: ContinuePanelSettings,
+  sourceManifest: WorkspaceSourceManifest,
   report: (message: string) => void | Promise<void>,
   existingAgent?: Agent,
   agentReady?: (agent: Agent) => void | Promise<void>,
@@ -582,16 +593,21 @@ async function prepareRemoteContinuation(
   await report("Preparing provider logins before startup");
   await installCredentials(api, agent, credentialsByProvider, credentialScope);
   const remoteSessions = await createRemoteSessions(api, agent, sessions, defaultSession, credentialsByProvider, credentialScope, settings.model);
-  await importSessionHistories(api, agent, remoteSessions, report);
   await report("Starting the agent");
   await ensureRunning(api, agent);
   agent = await api.getAgent(agent.id);
 
-  await attachCodingSessions(api, agent, remoteSessions, report);
   await writeEditorConnectionState(api, agent, folder.uri, "uploading", sessions.length);
-  await startSessionSyncs(api, agent, remoteSessions);
   await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(captureEditorState(folder.uri), null, 2)));
-  await startWorkspaceMirror(api, agent.id, folder.uri, { initialSync: true, report });
+  const workspaceSync = startWorkspaceMirror(api, agent.id, folder.uri, { initialSync: true, sourceManifest, report });
+  await Promise.all([
+    workspaceSync,
+    (async () => {
+      await importSessionHistories(api, agent, remoteSessions, report);
+      await attachCodingSessions(api, agent, remoteSessions, report);
+      await startSessionSyncs(api, agent, remoteSessions);
+    })(),
+  ]);
   await writeEditorConnectionState(api, agent, folder.uri, "complete", sessions.length);
   return agent;
 }
@@ -695,19 +711,25 @@ async function importSessionHistories(
   sessions: RemoteSession[],
   report: (message: string) => void | Promise<void>,
 ): Promise<void> {
-  for (const [index, { local, remote }] of sessions.entries()) {
-    await report(`Importing conversation ${index + 1} of ${sessions.length}: ${local.title}`);
-    const messages = await readSessionMessages(local);
-    if (messages.length) {
-      await api.importChatMessages({
-        agentId: agent.id,
-        threadId: remote.id,
-        provider: local.provider,
-        sessionId: local.sessionId,
-        messages,
-      });
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < sessions.length) {
+      const index = nextIndex++;
+      const { local, remote } = sessions[index];
+      await report(`Importing conversation ${index + 1} of ${sessions.length}: ${local.title}`);
+      const messages = await readSessionMessages(local);
+      if (messages.length) {
+        await api.importChatMessages({
+          agentId: agent.id,
+          threadId: remote.id,
+          provider: local.provider,
+          sessionId: local.sessionId,
+          messages,
+        });
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, sessions.length) }, worker));
 }
 
 async function attachCodingSessions(
@@ -745,6 +767,17 @@ async function reportBrowserProgress(
 ): Promise<void> {
   progress.report({ message });
   await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
+}
+
+async function captureProjectManifest(
+  workspace: vscode.Uri,
+  report: (message: string) => void | Promise<void>,
+): Promise<WorkspaceSourceManifest> {
+  await report("Creating the complete project manifest before copying files");
+  const excluded = vscode.workspace.getConfiguration("chatdev").get<string[]>("uploadExcludes", []);
+  const manifest = await captureWorkspaceSourceManifest(workspace.fsPath, excluded);
+  await report(`Project manifest sealed with ${manifest.entryCount} objects`);
+  return manifest;
 }
 
 async function openAgentPage(api: ChatDevApi, agent: Agent): Promise<void> {

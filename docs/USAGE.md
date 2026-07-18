@@ -130,7 +130,9 @@ The shortcuts are also shown in the chat.dev tool panel. The machine shell remai
 - Provider credentials when selected
 - Open editor tabs and cursor positions
 
-The first sync sends each object independently, with directories and smaller files ahead of large files. The chat.dev agent is usable as soon as it starts, and every completed file is usable as soon as it arrives. `.chatdev-sync-manifest.json` reports discovery progress and remains in the agent workspace after the first pass so the final state is explicit. A `filename.chatdev-downloading` sibling contains incomplete bytes; the real filename is installed only after its size and checksum are verified. Hidden files, `.git`, `node_modules`, empty directories, executable modes, and relative in-project symlinks are included. Set `chatdev.uploadExcludes` only when you intentionally want to leave out named files or directories.
+When you click **Create new agent**, the extension first lists the complete project without reading large file bodies. It seals a timestamped inventory, sends that inventory to the agent, and waits for its acknowledgement before transferring the first object. `.chatdev-sync-manifest.json` contains that immutable list, including each expected path, object type, size, mode, source revision, and symlink target. Changes made after its `capturedAt` timestamp are ordinary live mirror operations; they do not rewrite the historical snapshot.
+
+After the manifest is sealed, the first sync sends each object independently, with directories and smaller files ahead of large files. The chat.dev agent is usable as soon as it starts, and every completed file is usable as soon as it arrives. `.chatdev-sync-status.json` reports current progress. A `filename.chatdev-downloading` sibling contains incomplete bytes; the real filename is installed only after its size and checksum are verified. Hidden files, `.git`, `node_modules`, empty directories, executable modes, and relative in-project symlinks are included. Set `chatdev.uploadExcludes` only when you intentionally want to leave out named files or directories.
 
 ## Troubleshooting
 
@@ -148,7 +150,7 @@ Run **Continue** again from the original local project. Use **Try Again** to fin
 
 ### The transfer is still running
 
-You can use the chat.dev agent while project files continue appearing. Keep the original project window open when practical; closing or restarting it is also safe because the extension resumes its durable queue the next time that project opens. The status at the bottom of the Continue form shows the current step. On the agent, open `.chatdev-sync-manifest.json`: `discoveryComplete` records whether the first pass finished, while `status` is `syncing` whenever discovery or a live file transfer is still active. Its `activeDownloads` list and any `.chatdev-downloading` siblings identify interrupted or unfinished files.
+You can use the chat.dev agent while project files continue appearing. Keep the original project window open when practical; closing or restarting it is also safe because the extension resumes its durable queue the next time that project opens. The status at the bottom of the Continue form shows the current step. On the agent, `.chatdev-sync-manifest.json` is the sealed expected-object snapshot. Open `.chatdev-sync-status.json` for `discoveryComplete`, `acknowledgedLocalPathCount`, and `activeDownloads`; any `.chatdev-downloading` siblings identify interrupted or unfinished files.
 
 ### Cursor Agent is missing
 
