@@ -90,6 +90,8 @@ Base URL: `https://api.chat.dev`
 | `GET` | `/api/auth/socket-token` | Return a token accepted by the Socket.IO gateway |
 | `POST` | `/api/editor-handoffs` | Create the browser-based Open flow or a compatible legacy Continue flow |
 | `GET` | `/api/editor-handoffs/:token` | Return browser choices and current transfer state |
+| `POST` | `/api/editor-handoffs/:token/manifest/request` | Tell the editor to enumerate the complete local project before agent creation |
+| `POST` | `/api/editor-handoffs/:token/manifest/ready` | Record the sealed manifest identity, digest, count, and timestamp |
 | `POST` | `/api/editor-handoffs/:token/complete` | Record choices from the compatible browser-led Continue flow |
 | `POST` | `/api/editor-handoffs/:token/select-agent` | Record the agent chosen in the browser picker and return the editor callback URI |
 | `POST` | `/api/editor-handoffs/:token/progress` | Record upload progress, completion, or failure |
@@ -213,9 +215,27 @@ An Open request only needs `{ "kind": "open", "callbackUri": "vscode://chatdev.c
 
 `GET /api/editor-handoffs/:token` returns the project, sessions, selected agent, whether that agent still exists (`agentAvailable`), Default session ID, credential scope, status, progress message, error, and expiry. Both the editor access token and the signed-in browser session can read the same record for the same account.
 
-### 5. Complete or retry a browser handoff
+### 5. Seal the manifest, then complete or retry a browser handoff
 
-An older browser-led Continue form calls:
+The browser's **Create New Agent** button first calls:
+
+```json
+POST /api/editor-handoffs/:token/manifest/request
+```
+
+The handoff becomes `manifest_requested`. The extension immediately enumerates the complete local workspace and replies before it performs session discovery, credential installation, agent startup, or any workspace-object transfer:
+
+```json
+POST /api/editor-handoffs/:token/manifest/ready
+{
+  "manifestId": "manifest-uuid",
+  "digest": "64-character-sha256",
+  "entryCount": 1242,
+  "capturedAt": "2026-07-18T12:00:00.000Z"
+}
+```
+
+The handoff becomes `manifest_ready`. The browser waits for that state before it creates the agent, then calls:
 
 ```json
 POST /api/editor-handoffs/:token/complete
@@ -226,7 +246,7 @@ POST /api/editor-handoffs/:token/complete
 }
 ```
 
-The extension polls the handoff, sees the selected agent and Default session, and starts the transfer of every discovered session. It reports `uploading`, `complete`, or `failed` to `/progress` with a browser-readable message. `/retry` first verifies that the old agent still exists, then changes a failed transfer to `retry_requested` and returns a `vscode://` or `cursor://` callback that wakes the extension.
+`/complete` rejects the request unless the sealed manifest metadata is already on the handoff. The extension then starts the worker, sends and seals that exact manifest on the worker, and only after the worker acknowledges it begins transferring workspace objects. It reports `uploading`, `complete`, or `failed` to `/progress` with a browser-readable message. `/retry` first verifies that the old agent still exists, then changes a failed transfer to `retry_requested` and returns a `vscode://` or `cursor://` callback that wakes the extension.
 
 `POST /api/editor-handoffs/:token/replace-agent` is the explicit recovery path when the user wants a different machine or the previous agent was deleted. It clears `agentId`, `defaultSessionId`, the old error, and the selected credential scope without discarding the local project or session list. It returns `{ "browserUrl": ".../agents/new?editorHandoff=..." }`; completing that form attaches the new agent to the same handoff. `mainSessionId` and `conversationId` remain accepted as older-client aliases for `defaultSessionId`.
 
@@ -634,7 +654,7 @@ The remote shell is separate from the coding-agent interface but uses the same m
 
 ## Progressive workspace sync
 
-Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. As soon as agent creation begins, the extension lists the complete local workspace using path metadata without reading large file bodies. It sends and seals that inventory before the worker accepts the first object transfer. The harness remains operable while later file bodies arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
+Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. Clicking **Create New Agent** makes the browser request and wait for a complete local inventory before it creates the agent. The extension builds that inventory from path metadata without reading large file bodies. After the worker starts, it sends and seals that exact inventory before the worker accepts the first object transfer. The harness remains operable while later file bodies arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
 
 Sealing atomically creates `/workspace/.chatdev-sync-manifest.json`. This is an immutable logical snapshot containing `manifestId`, `generation`, `snapshotStartedAt`, `capturedAt`, entry count, digest, and the sorted list of every expected file, directory, and symlink with its source revision and metadata. The file is never exposed as a partially discovered path list. Changes observed after `capturedAt` use the normal append-only per-path journal and do not mutate the historical snapshot.
 

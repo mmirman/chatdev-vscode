@@ -36,7 +36,7 @@ export type EditorHandoff = {
   projectName: string | null;
   projectPath: string | null;
   conversations: EditorConversation[];
-  status: "pending" | "selected" | "uploading" | "complete" | "failed" | "retry_requested";
+  status: "pending" | "manifest_requested" | "manifest_ready" | "selected" | "uploading" | "complete" | "failed" | "retry_requested";
   agentId: string | null;
   conversationId: string | null;
   defaultSessionId?: string | null;
@@ -45,6 +45,10 @@ export type EditorHandoff = {
   credentialScope: "global" | "agent" | "none";
   progressMessage: string | null;
   error: string | null;
+  sourceManifestId?: string | null;
+  sourceManifestDigest?: string | null;
+  sourceManifestEntryCount?: number | null;
+  sourceManifestCapturedAt?: string | null;
   expiresAt: string;
   agentAvailable?: boolean | null;
 };
@@ -471,6 +475,18 @@ export class ChatDevApi {
     await this.request(`/api/editor-handoffs/${encodeURIComponent(token)}/progress`, {
       method: "POST",
       body: JSON.stringify(input),
+    });
+  }
+
+  async markEditorManifestReady(token: string, manifest: {
+    manifestId: string;
+    digest: string;
+    entryCount: number;
+    capturedAt: string;
+  }): Promise<void> {
+    await this.request(`/api/editor-handoffs/${encodeURIComponent(token)}/manifest/ready`, {
+      method: "POST",
+      body: JSON.stringify(manifest),
     });
   }
 

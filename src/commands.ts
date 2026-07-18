@@ -11,6 +11,7 @@ import { captureWorkspaceSourceManifest, type WorkspaceSourceManifest } from "./
 
 const activeBrowserTransfers = new Set<string>();
 const activePendingResumes = new Set<string>();
+const stagedBrowserManifests = new Map<string, WorkspaceSourceManifest>();
 const PENDING_CONTINUATIONS_KEY = "chatdev.pendingContinuations";
 const PENDING_BROWSER_HANDOFFS_KEY = "chatdev.pendingBrowserHandoffs";
 
@@ -62,6 +63,7 @@ export async function continueCurrentProjectInEditor(api: ChatDevApi): Promise<v
     ...(pending ? { initialSettings: pending.settings } : {}),
     ...(pending ? { existingAgentName: pending.agent.name } : {}),
   }, async (settings, report, _dismiss, intent: ContinuePanelIntent) => {
+    const sourceManifest = await captureProjectManifest(folder.uri, report);
     let selectedSettings = settings;
     if (intent === "replace") {
       const previousAgent = createdAgent;
@@ -81,7 +83,6 @@ export async function continueCurrentProjectInEditor(api: ChatDevApi): Promise<v
       }
     }
     validateContinueSettings(selectedSettings, sessions, machineTiers);
-    const sourceManifest = await captureProjectManifest(folder.uri, report);
     createdAgent = await prepareRemoteContinuation(api, folder, sessions, credentialsByProvider, selectedSettings, sourceManifest, report, createdAgent, async (agent) => {
       createdAgent = agent;
       await rememberPendingContinuation(api, folder.uri.fsPath, agent.id, selectedSettings);
@@ -140,6 +141,10 @@ export async function continueCurrentProjectInBrowser(api: ChatDevApi): Promise<
   }, async (progress) => {
     while (Date.now() < Date.parse(handoff.expiresAt)) {
       const state = await api.getEditorHandoff(handoff.token);
+      if (state.status === "manifest_requested") {
+        await stageRequestedBrowserManifest(api, handoff.token, folder.uri, progress);
+        continue;
+      }
       if (state.status === "complete") {
         await forgetBrowserHandoff(api, handoff.token);
         return;
@@ -215,6 +220,10 @@ export async function continueCursorSessionInBrowser(
   }, async (progress) => {
     while (Date.now() < Date.parse(handoff.expiresAt)) {
       const state = await api.getEditorHandoff(handoff.token);
+      if (state.status === "manifest_requested") {
+        await stageRequestedBrowserManifest(api, handoff.token, folder.uri, progress);
+        continue;
+      }
       if (state.status === "complete" && state.agentId) {
         await forgetBrowserHandoff(api, handoff.token);
         const agent = await api.getAgent(state.agentId);
@@ -343,6 +352,14 @@ export async function resumePendingContinuations(api: ChatDevApi): Promise<void>
     }
     try {
       const handoff = await api.getEditorHandoff(pending.token);
+      if (handoff.status === "manifest_requested") {
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: `Preparing ${folder.name} for chat.dev`,
+          cancellable: false,
+        }, (progress) => stageRequestedBrowserManifest(api, pending.token, folder.uri, progress));
+        continue;
+      }
       if (handoff.status === "complete") {
         await forgetBrowserHandoff(api, pending.token);
         continue;
@@ -372,8 +389,11 @@ async function transferBrowserHandoff(
   if (activeBrowserTransfers.has(token)) throw new Error("This project connection is already being prepared in the editor.");
   activeBrowserTransfers.add(token);
   try {
+    let sourceManifest = stagedBrowserManifests.get(token);
+    if (!sourceManifest || (handoff.sourceManifestId && sourceManifest.manifestId !== handoff.sourceManifestId)) {
+      sourceManifest = await captureProjectManifest(folder, (message) => reportBrowserProgress(api, token, progress, message));
+    }
     sessions = mergeCurrentSessions(sessions, await discoverLocalSessions(folder));
-    const sourceManifest = await captureProjectManifest(folder, (message) => reportBrowserProgress(api, token, progress, message));
     const defaultSessionId = handoffDefaultSessionId(handoff)!;
     const defaultSession = sessions.find((item) => item.sessionId === defaultSessionId);
     if (!defaultSession) throw new Error("The selected Default session is no longer available in this editor.");
@@ -417,11 +437,13 @@ async function transferBrowserHandoff(
 
     await api.updateEditorHandoff(token, { status: "complete", progressMessage: `Project and ${sessions.length} sessions ready`, error: null });
     await forgetBrowserHandoff(api, token);
+    stagedBrowserManifests.delete(token);
     void vscode.window.showInformationMessage(`${handoff.projectName || "Project"} and ${sessions.length} session${sessions.length === 1 ? "" : "s"} now mirror ${agent.name} on chat.dev.`, "Open agent").then((choice) => {
       if (choice === "Open agent") void openAgentPage(api, agent);
     });
     return { agent, remoteSessions };
   } catch (error) {
+    stagedBrowserManifests.delete(token);
     const message = error instanceof Error ? error.message : String(error);
     await api.updateEditorHandoff(token, { status: "failed", progressMessage: "Connection stopped", error: message }).catch(() => undefined);
     throw new Error(continuationFailureMessage(error));
@@ -767,6 +789,32 @@ async function reportBrowserProgress(
 ): Promise<void> {
   progress.report({ message });
   await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
+}
+
+async function stageRequestedBrowserManifest(
+  api: ChatDevApi,
+  token: string,
+  workspace: vscode.Uri,
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+): Promise<void> {
+  try {
+    const manifest = await captureProjectManifest(workspace, (message) => progress.report({ message }));
+    await api.markEditorManifestReady(token, {
+      manifestId: manifest.manifestId,
+      digest: manifest.digest,
+      entryCount: manifest.entryCount,
+      capturedAt: manifest.capturedAt,
+    });
+    stagedBrowserManifests.set(token, manifest);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await api.updateEditorHandoff(token, {
+      status: "failed",
+      progressMessage: "Project manifest could not be created",
+      error: message,
+    }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function captureProjectManifest(

@@ -197,7 +197,40 @@ paths:
                 - required: [conversationId]
       responses:
         "200": { description: Browser selection recorded }
+        "409": { description: Complete project manifest has not been sealed }
         "404": { $ref: "#/components/responses/NotFound" }
+  /api/editor-handoffs/{token}/manifest/request:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Request the complete local project manifest before agent creation
+      operationId: requestEditorHandoffManifest
+      responses:
+        "200": { description: A fresh editor manifest was requested for this Create action }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Agent creation has already started }
+  /api/editor-handoffs/{token}/manifest/ready:
+    parameters:
+      - $ref: "#/components/parameters/HandoffToken"
+    post:
+      summary: Record the sealed local project manifest before agent creation
+      operationId: completeEditorHandoffManifest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [manifestId, digest, entryCount, capturedAt]
+              properties:
+                manifestId: { type: string }
+                digest: { type: string, pattern: "^[a-f0-9]{64}$" }
+                entryCount: { type: integer, minimum: 0 }
+                capturedAt: { type: string, format: date-time }
+      responses:
+        "200": { description: Sealed manifest recorded; agent creation may proceed }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: No manifest was requested }
   /api/editor-handoffs/{token}/select-agent:
     parameters:
       - $ref: "#/components/parameters/HandoffToken"
@@ -915,7 +948,7 @@ components:
         conversations:
           type: array
           items: { $ref: "#/components/schemas/EditorConversation" }
-        status: { enum: [pending, selected, uploading, complete, failed, retry_requested] }
+        status: { enum: [pending, manifest_requested, manifest_ready, selected, uploading, complete, failed, retry_requested] }
         agentId: { type: [string, "null"] }
         defaultSessionId: { type: [string, "null"] }
         mainSessionId:
@@ -929,6 +962,10 @@ components:
         credentialScope: { enum: [global, agent, none] }
         progressMessage: { type: [string, "null"] }
         error: { type: [string, "null"] }
+        sourceManifestId: { type: [string, "null"] }
+        sourceManifestDigest: { type: [string, "null"] }
+        sourceManifestEntryCount: { type: [integer, "null"] }
+        sourceManifestCapturedAt: { type: [string, "null"], format: date-time }
         expiresAt: { type: string, format: date-time }
         agentAvailable:
           type: [boolean, "null"]
