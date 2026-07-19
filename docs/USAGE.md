@@ -9,7 +9,7 @@ Open the exact project used by your local Codex, Claude Code, or Cursor conversa
 3. The New Agent pane opens inside the editor with the project and local sessions already attached.
 4. Choose which local AI session should be the **Default**. Every session shown in the list will be transferred.
 5. Choose the machine, model, disk, budget, and provider login option. Each machine shows its current monthly price and included disk.
-6. Click **Create New Agent**. The editor immediately enumerates and seals the complete project manifest; the browser waits for that step before creating the agent. It then opens the agent page while the editor shows live setup and transfer progress. Keep the editor open until it finishes.
+6. Click **Create New Agent**. The editor immediately builds the complete project listing; the browser waits for that step before creating the agent. It then opens the agent page while the editor shows live setup and transfer progress. Keep the editor open until it finishes.
 
 ![The chat.dev panel with Continue and Open actions](images/panel.png)
 
@@ -130,9 +130,9 @@ The shortcuts are also shown in the chat.dev tool panel. The machine shell remai
 - Provider credentials when selected
 - Open editor tabs and cursor positions
 
-When you click **Create New Agent**, the browser first asks the extension for the manifest and does not create the agent until the extension has enumerated and sealed the complete local project. This reads path metadata, not large file bodies. Once the worker starts, the extension sends that exact timestamped inventory and waits for its acknowledgement before transferring the first object. `.chatdev-sync-manifest.json` contains the immutable list, including each expected path, object type, size, mode, source revision, and symlink target. Changes made after its `capturedAt` timestamp are ordinary live mirror operations; they do not rewrite the historical snapshot.
+When you click **Create New Agent**, the browser first asks the extension for the manifest and does not create the agent until the extension has built the complete local project listing. This reads path metadata, not large file bodies. Once the worker starts, the extension sends that exact timestamped inventory and waits for its acknowledgement before transferring the first object. `.chatdev-sync-manifest.json` contains the fixed list, including each expected path, object type, size, mode, source revision, and symlink target. Changes made after its `capturedAt` timestamp are ordinary live mirror operations; they do not rewrite the original snapshot.
 
-After the manifest is sealed, the first sync sends each object independently, with directories and smaller files ahead of large files. The chat.dev agent is usable as soon as it starts, and every completed file is usable as soon as it arrives. `.chatdev-sync-status.json` reports current progress. A `filename.chatdev-downloading` sibling contains incomplete bytes; the real filename is installed only after its size and checksum are verified. Hidden files, `.git`, `node_modules`, empty directories, executable modes, and relative in-project symlinks are included. Set `chatdev.uploadExcludes` only when you intentionally want to leave out named files or directories.
+After the manifest is complete, the first sync sends each object independently, with directories and smaller files ahead of large files. The chat.dev agent is usable as soon as it starts, and every completed file is usable as soon as it arrives. `.chatdev-sync-status.json` reports current progress. A `filename.chatdev-downloading` sibling contains incomplete bytes; the real filename is installed only after its size and checksum are verified. Hidden files, `.git`, `node_modules`, empty directories, executable modes, and relative in-project symlinks are included. Set `chatdev.uploadExcludes` only when you intentionally want to leave out named files or directories.
 
 ## Troubleshooting
 
@@ -150,7 +150,7 @@ Run **Continue** again from the original local project. Use **Try Again** to fin
 
 ### The transfer is still running
 
-You can use the chat.dev agent while project files continue appearing. Keep the original project window open when practical; closing or restarting it is also safe because the extension resumes its durable queue the next time that project opens. The status at the bottom of the Continue form shows the current step. On the agent, `.chatdev-sync-manifest.json` is the sealed expected-object snapshot. Open `.chatdev-sync-status.json` for `discoveryComplete`, `acknowledgedLocalPathCount`, and `activeDownloads`; any `.chatdev-downloading` siblings identify interrupted or unfinished files.
+You can use the chat.dev agent while project files continue appearing. Keep the original project window open when practical; closing or restarting it is also safe because the extension resumes its durable queue the next time that project opens. The status at the bottom of the Continue form shows the current step. On the agent, `.chatdev-sync-manifest.json` is the complete expected-object snapshot. Open `.chatdev-sync-status.json` for `discoveryComplete`, `acknowledgedLocalPathCount`, and `activeDownloads`; any `.chatdev-downloading` siblings identify interrupted or unfinished files.
 
 ### Cursor Agent is missing
 

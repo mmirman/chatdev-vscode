@@ -197,7 +197,7 @@ paths:
                 - required: [conversationId]
       responses:
         "200": { description: Browser selection recorded }
-        "409": { description: Complete project manifest has not been sealed }
+        "409": { description: Complete project manifest has not been recorded }
         "404": { $ref: "#/components/responses/NotFound" }
   /api/editor-handoffs/{token}/manifest/request:
     parameters:
@@ -213,7 +213,7 @@ paths:
     parameters:
       - $ref: "#/components/parameters/HandoffToken"
     post:
-      summary: Record the sealed local project manifest before agent creation
+      summary: Record the complete local project manifest before agent creation
       operationId: completeEditorHandoffManifest
       requestBody:
         required: true
@@ -228,7 +228,7 @@ paths:
                 entryCount: { type: integer, minimum: 0 }
                 capturedAt: { type: string, format: date-time }
       responses:
-        "200": { description: Sealed manifest recorded; agent creation may proceed }
+        "200": { description: Complete manifest recorded; agent creation may proceed }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { description: No manifest was requested }
   /api/editor-handoffs/{token}/select-agent:

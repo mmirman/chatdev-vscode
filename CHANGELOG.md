@@ -2,7 +2,7 @@
 
 ## 0.1.3
 
-- Seal a complete timestamped project manifest before transferring the first workspace object.
+- Build and record a complete timestamped project listing before transferring the first workspace object.
 - Make the browser's Create New Agent action wait for Cursor or VS Code to finish that manifest before creating the agent.
 - Keep the expected-object snapshot in `.chatdev-sync-manifest.json` and mutable transfer progress in `.chatdev-sync-status.json`.
 - Start workspace copying alongside conversation import instead of making either phase wait for the other.

@@ -91,7 +91,7 @@ Base URL: `https://api.chat.dev`
 | `POST` | `/api/editor-handoffs` | Create the browser-based Open flow or a compatible legacy Continue flow |
 | `GET` | `/api/editor-handoffs/:token` | Return browser choices and current transfer state |
 | `POST` | `/api/editor-handoffs/:token/manifest/request` | Tell the editor to enumerate the complete local project before agent creation |
-| `POST` | `/api/editor-handoffs/:token/manifest/ready` | Record the sealed manifest identity, digest, count, and timestamp |
+| `POST` | `/api/editor-handoffs/:token/manifest/ready` | Record the complete manifest identity, digest, count, and timestamp |
 | `POST` | `/api/editor-handoffs/:token/complete` | Record choices from the compatible browser-led Continue flow |
 | `POST` | `/api/editor-handoffs/:token/select-agent` | Record the agent chosen in the browser picker and return the editor callback URI |
 | `POST` | `/api/editor-handoffs/:token/progress` | Record upload progress, completion, or failure |
@@ -215,7 +215,7 @@ An Open request only needs `{ "kind": "open", "callbackUri": "vscode://chatdev.c
 
 `GET /api/editor-handoffs/:token` returns the project, sessions, selected agent, whether that agent still exists (`agentAvailable`), Default session ID, credential scope, status, progress message, error, and expiry. Both the editor access token and the signed-in browser session can read the same record for the same account.
 
-### 5. Seal the manifest, then complete or retry a browser handoff
+### 5. Complete the manifest, then complete or retry a browser handoff
 
 The browser's **Create New Agent** button first calls:
 
@@ -246,7 +246,7 @@ POST /api/editor-handoffs/:token/complete
 }
 ```
 
-`/complete` rejects the request unless the sealed manifest metadata is already on the handoff. The extension then starts the worker, sends and seals that exact manifest on the worker, and only after the worker acknowledges it begins transferring workspace objects. It reports `uploading`, `complete`, or `failed` to `/progress` with a browser-readable message. `/retry` first verifies that the old agent still exists, then changes a failed transfer to `retry_requested` and returns a `vscode://` or `cursor://` callback that wakes the extension.
+`/complete` rejects the request unless the complete manifest metadata is already on the handoff. The extension then starts the worker, sends and finalizes that exact manifest on the worker, and only after the worker acknowledges it begins transferring workspace objects. It reports `uploading`, `complete`, or `failed` to `/progress` with a browser-readable message. `/retry` first verifies that the old agent still exists, then changes a failed transfer to `retry_requested` and returns a `vscode://` or `cursor://` callback that wakes the extension.
 
 `POST /api/editor-handoffs/:token/replace-agent` is the explicit recovery path when the user wants a different machine or the previous agent was deleted. It clears `agentId`, `defaultSessionId`, the old error, and the selected credential scope without discarding the local project or session list. It returns `{ "browserUrl": ".../agents/new?editorHandoff=..." }`; completing that form attaches the new agent to the same handoff. `mainSessionId` and `conversationId` remain accepted as older-client aliases for `defaultSessionId`.
 
@@ -654,11 +654,11 @@ The remote shell is separate from the coding-agent interface but uses the same m
 
 ## Progressive workspace sync
 
-Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. Clicking **Create New Agent** makes the browser request and wait for a complete local inventory before it creates the agent. The extension builds that inventory from path metadata without reading large file bodies. After the worker starts, it sends and seals that exact inventory before the worker accepts the first object transfer. The harness remains operable while later file bodies arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
+Workspace continuation uses one durable per-path protocol for the first copy and every later edit. There is no whole-project archive phase. Clicking **Create New Agent** makes the browser request and wait for a complete local inventory before it creates the agent. The extension builds that inventory from path metadata without reading large file bodies. After the worker starts, it sends and finalizes that exact inventory before the worker accepts the first object transfer. The harness remains operable while later file bodies arrive. Directories and smaller files are scheduled ahead of large files, so useful parts of a large project become available quickly.
 
-Sealing atomically creates `/workspace/.chatdev-sync-manifest.json`. This is an immutable logical snapshot containing `manifestId`, `generation`, `snapshotStartedAt`, `capturedAt`, entry count, digest, and the sorted list of every expected file, directory, and symlink with its source revision and metadata. The file is never exposed as a partially discovered path list. Changes observed after `capturedAt` use the normal append-only per-path journal and do not mutate the historical snapshot.
+Completing the manifest atomically creates `/workspace/.chatdev-sync-manifest.json`. This is a fixed logical snapshot containing `manifestId`, `generation`, `snapshotStartedAt`, `capturedAt`, entry count, digest, and the sorted list of every expected file, directory, and symlink with its source revision and metadata. The file is never exposed as a partial path list. Changes observed after `capturedAt` use the normal append-only per-path journal and do not mutate the original snapshot.
 
-Mutable progress lives in `/workspace/.chatdev-sync-status.json`, which reports `syncing` or `complete`, discovery state, expected and acknowledged counts, latest local version, remote change cursor, timestamps, and active downloads. It remains after `workspace_sync_complete`, which records `discoveryComplete: true` only after the extension has received a durable acknowledgement for every object observed during the transfer pass. Worker or editor restarts retain the sealed manifest, progress, and both journals, so the same generation resumes.
+Mutable progress lives in `/workspace/.chatdev-sync-status.json`, which reports `syncing` or `complete`, discovery state, expected and acknowledged counts, latest local version, remote change cursor, timestamps, and active downloads. It remains after `workspace_sync_complete`, which records `discoveryComplete: true` only after the extension has received a durable acknowledgement for every object observed during the transfer pass. Worker or editor restarts retain the complete manifest, progress, and both journals, so the same generation resumes.
 
 Incomplete file content is written to the deterministic sibling `<path>.chatdev-downloading`. The target `<path>` is left unchanged or absent until all bytes match the declared size and SHA-256, then the completed sibling is atomically installed at the target. A worker restart changes any retained `activeDownloads` entry to `interrupted`; retrying that path replaces the stale partial content.
 
@@ -666,7 +666,7 @@ Incomplete file content is written to the deterministic sibling `<path>.chatdev-
 
 | Event | Request fields after `agentId` | What the worker returns or does |
 | --- | --- | --- |
-| `workspace_sync_status` | none | Active generation, owner, phase, cursor, sealed source-manifest identity, and progress filename |
+| `workspace_sync_status` | none | Active generation, owner, phase, cursor, completed source-manifest identity, and progress filename |
 | `workspace_sync_begin` | `generation`, `clientId`, optional `expectedGeneration` | Claims or resumes a generation; object transfers remain disabled |
 | `workspace_sync_source_manifest_begin` | manifest identity, timestamps, entry count, digest | Starts or idempotently resumes receipt of one complete source snapshot |
 | `workspace_sync_source_manifest_append` | manifest identity, ordered `offset`, up to 2,000 entries | Persists one idempotent sorted manifest chunk without transferring workspace objects |
@@ -675,7 +675,7 @@ Incomplete file content is written to the deterministic sibling `<path>.chatdev-
 | `workspace_sync_changes` | `cursor`, optional `limit` | Ordered changes after the cursor, or `rescanRequired: true` when the retained log no longer reaches it |
 | `workspace_sync_complete` | `generation`, `clientId`, `lastLocalVersion`, `discoveredObjectCount` | Verifies that version was applied, requires no active downloads, switches to `live`, and records completed discovery in the manifest |
 
-The worker rejects `workspace_sync_apply` and `workspace_sync_file_begin` with `workspace_sync_manifest_required` until the complete source manifest is sealed. The extension captures the remote cursor before reading the paged remote inventory, then consumes every change after that cursor. If a watcher notification or retained cursor is lost, it requests `workspace_sync_manifest` with `reconcile: true`, compares revisions, and continues from the new cursor.
+The worker rejects `workspace_sync_apply` and `workspace_sync_file_begin` with `workspace_sync_manifest_required` until the complete source manifest is finalized. The extension captures the remote cursor before reading the paged remote inventory, then consumes every change after that cursor. If a watcher notification or retained cursor is lost, it requests `workspace_sync_manifest` with `reconcile: true`, compares revisions, and continues from the new cursor.
 
 ### Apply one object
 
@@ -723,7 +723,7 @@ Downloads in either direction use the deterministic `.chatdev-downloading` sibli
 - The extension persists its outbound operations, inbound events, local versions, per-path server sequence, remote cursor, and generation under VS Code global storage before acknowledging progress.
 - The worker persists its generation, applied operation results, path manifest, and bounded change log on the agent volume.
 - Workspace sync never writes conversation events, Simplify projections, SMS/voice channel state, subscriptions, or session rows.
-- The sealed source manifest is the logical point-in-time expected inventory. Each object becomes usable at its acknowledged revision, and edits after `capturedAt` are later append-only operations rather than retroactive manifest changes.
+- The complete source manifest is the logical point-in-time expected inventory. Each object becomes usable at its acknowledged revision, and edits after `capturedAt` are later append-only operations rather than retroactive manifest changes.
 - An acknowledged delete is a tombstone for that path/version. Restart replay cannot resurrect an older write.
 - File installs and journal writes are atomic. Content hashes, revisions, and server sequences replace time-based echo suppression.
 - The extension mirrors hidden files, `.git`, `node_modules`, modes, empty directories, and relative in-project symlinks unless a matching name is listed in `chatdev.uploadExcludes`. `.chatdev`, `.chatdev-sync-manifest.json`, `.chatdev-sync-status.json`, `.chatdev-downloading` siblings, and internal temporary files are not mirrored back.
@@ -814,7 +814,7 @@ The extension then starts the agent. The login is present when the first harness
 - [x] Coding-agent terminal events
 - [x] Independent shell events
 - [x] Durable per-path workspace generations, revisions, and change cursors
-- [x] Complete sealed source manifest before progressive initial object transfer, with separate status and explicit partial files
+- [x] Complete source manifest before progressive initial object transfer, with separate status and explicit partial files
 - [x] Idempotent operations, compare-and-swap conflicts, and tombstones
 - [x] Chunked large-file sync and revision-checked remote reads
 - [x] Restart recovery and manifest reconciliation on both sides

@@ -427,7 +427,7 @@ async function transferBrowserHandoff(
     await writeEditorConnectionState(api, agent, folder, "uploading", sessions.length);
     const editorState = captureEditorState(folder);
     await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(editorState, null, 2)));
-    await api.updateEditorHandoff(token, { status: "uploading", progressMessage: "Installing the sealed project manifest" });
+    await api.updateEditorHandoff(token, { status: "uploading", progressMessage: "Installing the complete project manifest" });
     const workspaceSync = startWorkspaceMirror(api, agent.id, folder, { initialSync: true, sourceManifest, report: async (message) => {
       progress.report({ message });
       await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
@@ -833,7 +833,7 @@ async function captureProjectManifest(
   await report("Creating the complete project manifest before copying files");
   const excluded = vscode.workspace.getConfiguration("chatdev").get<string[]>("uploadExcludes", []);
   const manifest = await captureWorkspaceSourceManifest(workspace.fsPath, excluded);
-  await report(`Project manifest sealed with ${manifest.entryCount} objects`);
+  await report(`Project manifest ready with ${manifest.entryCount} objects`);
   return manifest;
 }
 

@@ -61,8 +61,8 @@ Editor implementations that mirror an entire local workspace should use the dura
 | MCP tool | What it does | Socket.IO event |
 | --- | --- | --- |
 | `chatdev_begin_workspace_sync` | Start or resume one editor generation with object transfer disabled | `workspace_sync_begin` |
-| `chatdev_send_workspace_manifest` | Send the complete sorted local inventory in chunks and atomically seal it before transferring objects | `workspace_sync_source_manifest_begin/append/seal` |
-| `chatdev_get_workspace_sync` | Read generation, phase, sealed source-manifest identity, progress filename, and change cursor | `workspace_sync_status` |
+| `chatdev_send_workspace_manifest` | Send and finish the complete sorted local inventory before transferring objects | `workspace_sync_source_manifest_begin/append/seal` |
+| `chatdev_get_workspace_sync` | Read generation, phase, completed source-manifest identity, progress filename, and change cursor | `workspace_sync_status` |
 | `chatdev_get_remote_workspace_inventory` | Page through current remote revisions, optionally reconciling missed watcher events | `workspace_sync_manifest` |
 | `chatdev_get_workspace_changes` | Read durable changes after a cursor | `workspace_sync_changes` |
 | `chatdev_apply_workspace_object` | Apply one idempotent compare-and-swap file, directory, symlink, or tombstone | `workspace_sync_apply` |

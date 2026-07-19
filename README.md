@@ -97,8 +97,8 @@ VS Code saves those conversations in its normal **Chat sessions** list. They sta
 ## What Continue does
 
 1. **Click Continue.** The extension finds Codex, Claude Code, and Cursor conversations associated with the exact open project and opens its New Agent pane in the editor.
-2. **Choose settings and create the agent.** Select the Default session, machine, disk, model, budget, and provider login. As soon as you click **Create new agent**, the extension lists the complete local project and seals that snapshot before it copies any project object.
-3. **Keep working.** Clicking **Create New Agent** first makes Cursor or VS Code enumerate and seal the complete timestamped project manifest; the browser waits for that acknowledgement before it creates the agent. Once the worker starts, `.chatdev-sync-manifest.json` receives every expected file, directory, and symlink before any file body is copied. `.chatdev-sync-status.json` shows transfer progress, and a `filename.chatdev-downloading` sibling means that file is not ready yet. The agent remains usable during copying; later edits mirror both ways as changes after the sealed snapshot.
+2. **Choose settings and create the agent.** Select the Default session, machine, disk, model, budget, and provider login. As soon as you click **Create new agent**, the extension builds the complete local project listing before it copies any project object.
+3. **Keep working.** Clicking **Create New Agent** first makes Cursor or VS Code finish the complete timestamped project listing; the browser waits for that acknowledgement before it creates the agent. Once the worker starts, `.chatdev-sync-manifest.json` receives every expected file, directory, and symlink before any file body is copied. `.chatdev-sync-status.json` shows transfer progress, and a `filename.chatdev-downloading` sibling means that file is not ready yet. The agent remains usable during copying; later edits mirror both ways as changes after the recorded snapshot.
 
 The shortcuts are `Ctrl+Alt+Shift+C` and `Ctrl+Alt+Shift+O` on Windows/Linux or `Cmd+Alt+Shift+C` and `Cmd+Alt+Shift+O` on macOS.
 
