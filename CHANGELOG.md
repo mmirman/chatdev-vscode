@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Use one deterministic path order for project listings on every operating system.
+- Point live transfer progress at `.chatdev-sync-status.json`; `.chatdev-sync-manifest.json` remains the complete file list.
+
 ## 0.1.3
 
 - Build and record a complete timestamped project listing before transferring the first workspace object.

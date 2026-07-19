@@ -15,6 +15,9 @@ test("captures one sealed, sorted inventory before workspace transfer", async (t
   await mkdir(join(root, ".git"), { recursive: true });
   await mkdir(join(root, "ignored"), { recursive: true });
   await writeFile(join(root, "README.md"), "project\n");
+  await writeFile(join(root, "A.txt"), "uppercase\n");
+  await writeFile(join(root, "_local.txt"), "underscore\n");
+  await writeFile(join(root, "a.txt"), "lowercase\n");
   await writeFile(join(root, "src", "main.ts"), "export {};\n");
   await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
   await writeFile(join(root, "ignored", "private.txt"), "ignored\n");
@@ -26,7 +29,10 @@ test("captures one sealed, sorted inventory before workspace transfer", async (t
   assert.deepEqual(manifest.entries.map((entry) => entry.path), [
     ".git",
     ".git/HEAD",
+    "A.txt",
     "README.md",
+    "_local.txt",
+    "a.txt",
     "src",
     "src/current.ts",
     "src/main.ts",

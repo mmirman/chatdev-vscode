@@ -20,6 +20,7 @@ import {
   ignoredWorkspacePath,
   PARTIAL_SUFFIX,
   SYNC_MANIFEST,
+  SYNC_STATUS,
   type WorkspaceSourceManifest,
 } from "./workspace-source-manifest";
 
@@ -386,7 +387,7 @@ class WorkspaceMirror implements vscode.Disposable {
   }
 
   private async performInitialSync(startCursor: number, report?: (message: string) => void | Promise<void>): Promise<void> {
-    await safeReport(report, `Syncing project files as they are found; ${SYNC_MANIFEST} shows live progress on the chat.dev machine`);
+    await safeReport(report, `Syncing project files as they are found; ${SYNC_STATUS} shows live progress on the chat.dev machine`);
     const manifestPromise = this.fetchRemoteManifest(startCursor);
     const scanPromise = this.scanLocalWorkspace(report);
     const manifest = await manifestPromise;

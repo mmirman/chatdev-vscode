@@ -70,7 +70,7 @@ export async function captureWorkspaceSourceManifest(
   };
 
   await visit(root, "");
-  entries.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) => compareWorkspacePaths(left.path, right.path));
   const capturedAt = new Date().toISOString();
   return {
     version: 1,
@@ -81,6 +81,10 @@ export async function captureWorkspaceSourceManifest(
     digest: workspaceSourceManifestDigest(entries),
     entries,
   };
+}
+
+export function compareWorkspacePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function workspaceSourceManifestDigest(entries: WorkspaceSourceManifestEntry[]): string {
