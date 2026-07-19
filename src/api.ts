@@ -61,6 +61,7 @@ export type ChatMessage = {
   sourceKey?: string | null;
   kind?: string | null;
   phase?: string | null;
+  turnId?: string | null;
   runtimeTurnId?: string | null;
   streamId?: string | null;
   append?: boolean;
@@ -92,6 +93,7 @@ export type ImportedChatMessage = {
   createdAt?: string | null;
   sourceId?: string;
   turnId?: string;
+  originKey?: string;
 };
 
 export type EditorLanguageModel = {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Preserve the chat.dev origin and turn identity on messages mirrored into Cursor so transcript scans cannot send them back as new requests.
+- Exclude chat.dev's generated Cursor conversation rule and its conflict copies from project file synchronization while continuing to synchronize user-authored Cursor rules.
+
 ## 0.1.4
 
 - Use one deterministic path order for project listings on every operating system.

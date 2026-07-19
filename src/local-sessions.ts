@@ -28,6 +28,7 @@ export type LocalSessionMessage = {
   createdAt?: string | null;
   sourceId?: string;
   turnId?: string;
+  originKey?: string;
 };
 
 const SESSION_SCAN_BYTES = 2 * 1024 * 1024;
@@ -542,7 +543,8 @@ function cursorMessage(value: unknown, sourceId?: string): LocalSessionMessage |
     content,
     createdAt: cursorDate(record.createdAt ?? record.timestamp ?? record.time),
     sourceId,
-    turnId: firstString([record.requestId, record.generationUUID, record.chatGenerationUUID, record.runtimeTurnId]),
+    turnId: firstString([record.chatdevTurnId, record.requestId, record.generationUUID, record.chatGenerationUUID, record.runtimeTurnId]),
+    originKey: firstString([record.chatdevSourceKey]),
   };
 }
 

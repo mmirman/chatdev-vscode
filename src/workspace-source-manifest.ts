@@ -95,6 +95,8 @@ export function ignoredWorkspacePath(relativePath: string, excludedNames: Readon
   const segments = relativePath.split(/[\\/]/).filter(Boolean);
   return relativePath === SYNC_MANIFEST
     || relativePath === SYNC_STATUS
+    || relativePath === ".cursor/rules/chatdev-imported-conversation.mdc"
+    || relativePath.startsWith(".cursor/rules/chatdev-imported-conversation.mdc.chatdev-conflict-")
     || segments.some((segment) => segment === ".chatdev"
       || segment.endsWith(PARTIAL_SUFFIX)
       || segment.startsWith(INTERNAL_TEMP_PREFIX)

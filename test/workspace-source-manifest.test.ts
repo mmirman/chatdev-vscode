@@ -13,6 +13,7 @@ test("captures one sealed, sorted inventory before workspace transfer", async (t
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "src"), { recursive: true });
   await mkdir(join(root, ".git"), { recursive: true });
+  await mkdir(join(root, ".cursor", "rules"), { recursive: true });
   await mkdir(join(root, "ignored"), { recursive: true });
   await writeFile(join(root, "README.md"), "project\n");
   await writeFile(join(root, "A.txt"), "uppercase\n");
@@ -20,6 +21,9 @@ test("captures one sealed, sorted inventory before workspace transfer", async (t
   await writeFile(join(root, "a.txt"), "lowercase\n");
   await writeFile(join(root, "src", "main.ts"), "export {};\n");
   await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+  await writeFile(join(root, ".cursor", "rules", "project.mdc"), "user rule\n");
+  await writeFile(join(root, ".cursor", "rules", "chatdev-imported-conversation.mdc"), "generated\n");
+  await writeFile(join(root, ".cursor", "rules", "chatdev-imported-conversation.mdc.chatdev-conflict-local-old"), "generated conflict\n");
   await writeFile(join(root, "ignored", "private.txt"), "ignored\n");
   await writeFile(join(root, ".chatdev-sync-manifest.json"), "old protocol file\n");
   await symlink("main.ts", join(root, "src", "current.ts"));
@@ -27,6 +31,9 @@ test("captures one sealed, sorted inventory before workspace transfer", async (t
   const manifest = await captureWorkspaceSourceManifest(root, ["ignored"]);
 
   assert.deepEqual(manifest.entries.map((entry) => entry.path), [
+    ".cursor",
+    ".cursor/rules",
+    ".cursor/rules/project.mdc",
     ".git",
     ".git/HEAD",
     "A.txt",
