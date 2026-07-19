@@ -428,22 +428,14 @@ async function transferBrowserHandoff(
     const editorState = captureEditorState(folder);
     await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(editorState, null, 2)));
     await api.updateEditorHandoff(token, { status: "uploading", progressMessage: "Installing the complete project manifest" });
-    const workspaceSync = startWorkspaceMirror(api, agent.id, folder, { initialSync: true, sourceManifest, report: async (message) => {
-      progress.report({ message });
-      await api.updateEditorHandoff(token, { status: "uploading", progressMessage: message });
-    } });
-    await Promise.all([
-      workspaceSync,
-      (async () => {
-        await importSessionHistories(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
-        await attachCodingSessions(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
-        await startSessionSyncs(api, agent, remoteSessions);
-      })(),
-    ]);
+    await startWorkspaceMirror(api, agent.id, folder, { initialSync: false, sourceManifest });
+    await importSessionHistories(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
+    await attachCodingSessions(api, agent, remoteSessions, (message) => reportBrowserProgress(api, token, progress, message));
+    await startSessionSyncs(api, agent, remoteSessions);
     await writeEditorConnectionState(api, agent, folder, "complete", sessions.length);
     await startWorkspaceSessionDiscovery(api, agent.id, folder);
 
-    await api.updateEditorHandoff(token, { status: "complete", progressMessage: `Project and ${sessions.length} sessions ready`, error: null });
+    await api.updateEditorHandoff(token, { status: "complete", progressMessage: `${sessions.length} sessions connected; project files continue syncing`, error: null });
     await forgetBrowserHandoff(api, token);
     stagedBrowserManifests.delete(token);
     void vscode.window.showInformationMessage(`${handoff.projectName || "Project"} and ${sessions.length} session${sessions.length === 1 ? "" : "s"} now mirror ${agent.name} on chat.dev.`, "Open agent").then((choice) => {
@@ -629,15 +621,13 @@ async function prepareRemoteContinuation(
 
   await writeEditorConnectionState(api, agent, folder.uri, "uploading", sessions.length);
   await api.writeWorkspaceFile(agent.id, ".chatdev/editor-state.json", Buffer.from(JSON.stringify(captureEditorState(folder.uri), null, 2)));
-  const workspaceSync = startWorkspaceMirror(api, agent.id, folder.uri, { initialSync: true, sourceManifest, report });
-  await Promise.all([
-    workspaceSync,
-    (async () => {
-      await importSessionHistories(api, agent, remoteSessions, report);
-      await attachCodingSessions(api, agent, remoteSessions, report);
-      await startSessionSyncs(api, agent, remoteSessions);
-    })(),
-  ]);
+  // Register the durable mirror immediately, but do not keep editor setup
+  // open until every project object has transferred. The manifest and sync
+  // status files describe progressive availability on the remote machine.
+  await startWorkspaceMirror(api, agent.id, folder.uri, { initialSync: false, sourceManifest });
+  await importSessionHistories(api, agent, remoteSessions, report);
+  await attachCodingSessions(api, agent, remoteSessions, report);
+  await startSessionSyncs(api, agent, remoteSessions);
   await writeEditorConnectionState(api, agent, folder.uri, "complete", sessions.length);
   return agent;
 }

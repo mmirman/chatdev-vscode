@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Finish editor connection setup after conversations are attached while durable project-file synchronization continues in the background.
+- Prevent the setup notification from remaining open until the last large project file transfers.
+
 ## 0.1.5
 
 - Preserve the chat.dev origin and turn identity on messages mirrored into Cursor so transcript scans cannot send them back as new requests.
