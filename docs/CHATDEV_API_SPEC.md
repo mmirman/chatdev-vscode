@@ -691,6 +691,8 @@ The worker rejects `workspace_sync_apply` and `workspace_sync_file_begin` with `
   "path": "src/index.ts",
   "kind": "file",
   "baseRevision": "f:old-sha256:420",
+  "mergeResponseVersion": 1,
+  "size": 1234,
   "mode": 420,
   "contentHash": "new-sha256",
   "dataBase64": "...",
@@ -702,7 +704,27 @@ The worker rejects `workspace_sync_apply` and `workspace_sync_file_begin` with `
 
 The tuple `(generation, path, version, opId)` is idempotent. Retrying an acknowledged operation returns the original result. A higher version for one path supersedes a lower queued version, while operations on different paths can progress independently.
 
-`baseRevision` is compare-and-swap state. When the worker still has that revision, it atomically installs the local object. When the harness changed the path first, the remote object remains at its original path and the local object is written to `<path>.chatdev-conflict-local-<timestamp>`. The response includes `conflict`, both revisions, and the conflict path. Deletes also use `baseRevision`; a concurrent remote edit is retained instead of being removed.
+`baseRevision` is compare-and-swap state. When the worker still has that revision, it atomically installs the local object. For ordinary UTF-8 text files, a client that sends `mergeResponseVersion: 1` can also receive an automatic three-way merge when the editor and harness changed different parts of the file. The worker retains a bounded, content-addressed cache of recent text revisions as common ancestors. A successful merge returns `merged: true`, the merged `entry` and revision; the client reads that exact revision and installs it into its local file or open unsaved editor before acknowledging the operation.
+
+```json
+{
+  "ok": true,
+  "path": "src/index.ts",
+  "merged": true,
+  "mergeBaseRevision": "f:old-sha256:420",
+  "mergedRemoteRevision": "f:chatdev-sha256:420",
+  "revision": "f:merged-sha256:420",
+  "entry": {
+    "type": "file",
+    "revision": "f:merged-sha256:420",
+    "size": 1302,
+    "mode": 420
+  },
+  "cursor": 91
+}
+```
+
+If the edits overlap, the ancestor is unavailable, the content is binary, an input is larger than 4 MiB, or the merged result would exceed 8 MiB, the remote object remains at its original path and the local object is written to `<path>.chatdev-conflict-local-<timestamp>`. The response includes `conflict`, both revisions, and the conflict path. Deletes also use `baseRevision`; a concurrent remote edit is retained instead of being removed. Clients that do not advertise `mergeResponseVersion: 1` keep this conflict-copy behavior.
 
 Set `probeOnly: true` before sending file content. If the claimed revision already exists, the worker records the operation and returns it without transferring bytes. Otherwise it returns `needsContent: true` without changing the path.
 
@@ -714,7 +736,7 @@ Set `probeOnly: true` before sending file content. If the claimed revision alrea
 | `workspace_sync_file_chunk` | Append an increasing chunk sequence and base64 bytes |
 | `workspace_sync_file_commit` | Verify size and SHA-256, then run the normal compare-and-swap apply |
 | `workspace_sync_file_abort` | Discard an unfinished transfer |
-| `workspace_sync_read_file` | Read a remote file by offset and length while requiring an unchanged expected revision |
+| `workspace_sync_read_file` | Read a remote file by offset and length at an exact expected revision; recently merged text remains readable from the bounded revision cache if the live path changes again |
 
 Downloads in either direction use the deterministic `.chatdev-downloading` sibling and are renamed into place only after verification. These siblings are reserved protocol paths and never enter either workspace index. If the user edits the local target during a download, that newer edit is journaled and sent back after the remote event is acknowledged instead of being overwritten.
 
@@ -726,6 +748,7 @@ Downloads in either direction use the deterministic `.chatdev-downloading` sibli
 - The complete source manifest is the logical point-in-time expected inventory. Each object becomes usable at its acknowledged revision, and edits after `capturedAt` are later append-only operations rather than retroactive manifest changes.
 - An acknowledged delete is a tombstone for that path/version. Restart replay cannot resurrect an older write.
 - File installs and journal writes are atomic. Content hashes, revisions, and server sequences replace time-based echo suppression.
+- Clean three-way merges preserve the same per-path operation identity and ordered change cursor; they do not create another event or logging system.
 - The extension mirrors hidden files, `.git`, `node_modules`, modes, empty directories, and relative in-project symlinks unless a matching name is listed in `chatdev.uploadExcludes`. `.chatdev`, `.chatdev-sync-manifest.json`, `.chatdev-sync-status.json`, `.chatdev-downloading` siblings, and internal temporary files are not mirrored back.
 
 ## Import and resume each session

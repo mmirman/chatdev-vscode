@@ -2,7 +2,7 @@
   "name": "chatdev-remote",
   "displayName": "chat.dev Remote Agents",
   "description": "Continue local Codex, Claude Code, and Cursor conversations on a live chat.dev workspace from VS Code or Cursor.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "chatdev",
   "license": "MIT",
   "repository": {

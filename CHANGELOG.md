@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+
+- Automatically merge non-overlapping text edits made concurrently in the local editor and on chat.dev, then update the open Cursor or VS Code document with the combined file.
+- Keep true overlaps, binary files, unusually large files, and edits whose common revision is no longer available as explicit conflict copies.
+
 ## 0.1.6
 
 - Finish editor connection setup after conversations are attached while durable project-file synchronization continues in the background.

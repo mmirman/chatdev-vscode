@@ -170,6 +170,7 @@ class WorkspaceMirror implements vscode.Disposable {
   private remoteDrainEnabled = false;
   private disposed = false;
   private lastConflictNotice = 0;
+  private readonly installedRemoteRevisions = new Map<string, { revision: string; expiresAt: number }>();
   private sourceManifest: WorkspaceSourceManifest | undefined;
 
   constructor(
@@ -214,6 +215,7 @@ class WorkspaceMirror implements vscode.Disposable {
     this.documentSubscription?.dispose();
     for (const timer of this.documentTimers.values()) clearTimeout(timer);
     this.documentTimers.clear();
+    this.installedRemoteRevisions.clear();
     if (this.changePoller) clearInterval(this.changePoller);
     if (this.reconcilePoller) clearInterval(this.reconcilePoller);
     this.socket?.disconnect();
@@ -565,6 +567,14 @@ class WorkspaceMirror implements vscode.Disposable {
 
   private async queueLocalPath(relativePath: string, inlineData?: Uint8Array): Promise<void> {
     if (this.disposed || !this.journal || this.ignored(relativePath)) return;
+    const installed = this.installedRemoteRevisions.get(relativePath);
+    if (installed) {
+      if (installed.expiresAt > Date.now()) {
+        const current = await this.snapshotLocalPath(relativePath, inlineData);
+        if (current?.revision === installed.revision) return;
+      }
+      this.installedRemoteRevisions.delete(relativePath);
+    }
     let sizeHint = inlineData?.byteLength || 0;
     if (!inlineData) {
       try { sizeHint = (await fs.lstat(this.absolutePath(relativePath))).size; } catch {}
@@ -618,16 +628,19 @@ class WorkspaceMirror implements vscode.Disposable {
         result = await this.rpc<RpcResult>("workspace_sync_apply", payload);
       }
       const entry = remoteEntryFromResult(result.entry);
+      const mergedConverged = result.merged !== true
+        || await this.convergeMergedFile(inflight.path, prepared, entry);
       await this.journal.acknowledge({
         path: inflight.path,
         version: inflight.version,
         revision: result.revision == null ? null : String(result.revision),
         entry,
-        conflict: result.conflict === true,
+        conflict: result.conflict === true || result.merged === true,
         serverCursor: typeof result.cursor === "number" ? result.cursor : undefined,
         remotelyApplied: true,
       });
       if (result.conflict === true) this.showConflictNotice(inflight.path, String(result.conflictPath || ""));
+      if (!mergedConverged) await this.queueLocalPath(inflight.path, this.openDocumentData(inflight.path));
       this.scheduleRemoteDrain();
     } catch (error) {
       if (isChecksumMismatch(error) || error instanceof LocalFileChangedError) {
@@ -657,6 +670,104 @@ class WorkspaceMirror implements vscode.Disposable {
     } catch (error) {
       await this.rpc("workspace_sync_file_abort", { transferId: begin.transferId }).catch(() => undefined);
       throw error;
+    }
+  }
+
+  private async convergeMergedFile(
+    relativePath: string,
+    prepared: PreparedLocalState,
+    entry: RemoteWorkspaceEntry | null,
+  ): Promise<boolean> {
+    if (!entry || entry.type !== "file") throw new Error(`chat.dev returned an invalid merged file for ${relativePath}`);
+    const contents = await this.readRemoteFileRevision(relativePath, entry);
+    if (`f:${hash(contents)}:${entry.mode}` !== entry.revision) {
+      throw new Error(`chat.dev returned merged bytes with the wrong revision for ${relativePath}`);
+    }
+
+    let current = await this.snapshotLocalPath(relativePath, this.openDocumentData(relativePath));
+    if (current?.revision === entry.revision) {
+      const document = this.openDocument(relativePath);
+      if (document?.isDirty) {
+        this.rememberInstalledRemoteRevision(relativePath, entry.revision);
+        if (!(await document.save())) throw new Error(`Could not save merged edits to ${relativePath}`);
+      }
+      return true;
+    }
+    if (current?.revision !== prepared.revision) return false;
+
+    this.rememberInstalledRemoteRevision(relativePath, entry.revision);
+    const target = this.absolutePath(relativePath);
+    const document = this.openDocument(relativePath);
+    if (document && !document.isClosed) {
+      const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contents);
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(
+        document.uri,
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        text,
+      );
+      if (!(await vscode.workspace.applyEdit(edit))) throw new Error(`Could not apply merged edits to ${relativePath}`);
+      if (hash(Buffer.from(document.getText(), "utf8")) !== hash(contents)) return false;
+      if (!(await document.save())) throw new Error(`Could not save merged edits to ${relativePath}`);
+      await fs.chmod(target, modeOr(entry.mode, 0o644));
+    } else {
+      const temporary = path.join(path.dirname(target), `${INTERNAL_TEMP_PREFIX}${crypto.randomUUID()}`);
+      try {
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(temporary, contents, { mode: modeOr(entry.mode, 0o644) });
+        await removeDirectoryAtTarget(target);
+        await atomicReplace(temporary, target);
+      } finally {
+        await fs.rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+
+    current = await this.snapshotLocalPath(relativePath, this.openDocumentData(relativePath));
+    if (current?.revision === entry.revision) return true;
+    this.installedRemoteRevisions.delete(relativePath);
+    return false;
+  }
+
+  private rememberInstalledRemoteRevision(relativePath: string, revision: string): void {
+    const expiresAt = Date.now() + 5_000;
+    this.installedRemoteRevisions.set(relativePath, { revision, expiresAt });
+    setTimeout(() => {
+      const installed = this.installedRemoteRevisions.get(relativePath);
+      if (installed?.revision === revision && installed.expiresAt === expiresAt) {
+        this.installedRemoteRevisions.delete(relativePath);
+      }
+    }, 5_000);
+  }
+
+  private async readRemoteFileRevision(relativePath: string, entry: RemoteWorkspaceEntry): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    while (true) {
+      const chunk = await this.rpc<RpcResult & {
+        dataBase64: string;
+        nextOffset: number;
+        eof: boolean;
+        size: number;
+        revision: string;
+      }>("workspace_sync_read_file", {
+        path: relativePath,
+        offset,
+        length: TRANSFER_CHUNK_SIZE,
+        expectedRevision: entry.revision,
+      });
+      if (chunk.revision !== entry.revision) throw new Error(`chat.dev changed ${relativePath} during merge reconciliation`);
+      const data = Buffer.from(chunk.dataBase64, "base64");
+      if (chunk.nextOffset !== offset + data.length || (!chunk.eof && chunk.nextOffset <= offset)) {
+        throw new Error(`chat.dev returned an invalid file chunk for ${relativePath}`);
+      }
+      chunks.push(data);
+      offset = chunk.nextOffset;
+      if (chunk.eof) {
+        if (offset !== entry.size || Number(chunk.size) !== entry.size) {
+          throw new Error(`chat.dev returned the wrong merged file size for ${relativePath}`);
+        }
+        return Buffer.concat(chunks, offset);
+      }
     }
   }
 
@@ -1005,6 +1116,8 @@ function operationPayload(
     path: operation.path,
     kind: prepared.kind,
     baseRevision: operation.baseRevision,
+    mergeResponseVersion: 1,
+    size: prepared.size,
     mode: prepared.mode,
     ...(prepared.contentHash ? { contentHash: prepared.contentHash } : {}),
     ...(prepared.target != null ? { target: prepared.target } : {}),
