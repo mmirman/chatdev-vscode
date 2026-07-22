@@ -1,8 +1,7 @@
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { querySqlite } from "./sqlite";
 
 export type LocalProviderCredentials = {
   provider: "codex" | "claude" | "cursor";
@@ -11,7 +10,6 @@ export type LocalProviderCredentials = {
 };
 
 const MAX_CREDENTIAL_FILE_BYTES = 1024 * 1024;
-const execFileAsync = promisify(execFile);
 
 export async function findLocalProviderCredentials(provider: "codex" | "claude" | "cursor"): Promise<LocalProviderCredentials> {
   const values: Record<string, string> = {};
@@ -53,8 +51,7 @@ async function readCursorEditorCredential(): Promise<string | undefined> {
     try {
       const metadata = await fs.stat(databasePath);
       if (!metadata.isFile()) continue;
-      const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", databasePath, query], { maxBuffer: MAX_CREDENTIAL_FILE_BYTES });
-      const rows = JSON.parse(stdout || "[]") as Array<{ key?: string; value?: string }>;
+      const rows = await querySqlite<{ key?: string; value?: string }>(databasePath, query, MAX_CREDENTIAL_FILE_BYTES);
       const values = Object.fromEntries(rows.map((row) => [row.key, row.value]));
       const accessToken = decodeStoredString(values["cursorAuth/accessToken"]);
       const refreshToken = decodeStoredString(values["cursorAuth/refreshToken"]);

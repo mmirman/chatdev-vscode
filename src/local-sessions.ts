@@ -1,12 +1,9 @@
-import { execFile } from "child_process";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
-import { promisify } from "util";
 import * as vscode from "vscode";
 import { dedupeCursorTranscriptMessages } from "./cursor-sync-identity";
-
-const execFileAsync = promisify(execFile);
+import { querySqlite } from "./sqlite";
 
 export type LocalAgentSession = {
   provider: "codex" | "claude" | "cursor";
@@ -87,13 +84,14 @@ export async function readSessionMessages(session: LocalAgentSession): Promise<L
         metadata.mtimeMs,
         metadata.size,
       )).find((candidate) => candidate.sessionId === session.sessionId);
-      if (refreshed?.messages) return refreshed.messages.slice(-1000);
+      if (refreshed?.messages?.length) return refreshed.messages.slice(-1000);
     } catch {
       // Cursor can rotate or lock its state database briefly while saving.
     }
   }
-  if (session.messages) return session.messages.slice(-1000);
+  if (session.messages?.length) return session.messages.slice(-1000);
   if (!session.filePath) return [];
+  if (session.provider === "cursor") return readCursorTranscriptMessages(session.filePath);
   const lines = (await fs.readFile(session.filePath, "utf8")).split(/\r?\n/).filter(Boolean);
   const messages: LocalSessionMessage[] = [];
   for (const line of lines) {
@@ -149,14 +147,13 @@ async function findCursorSessions(workspacePath: string): Promise<LocalAgentSess
     findCursorComposerSessions(workspacePath),
     findCursorAgentTranscripts(workspacePath),
   ]);
-  if (!composers.length) return transcripts;
-
   // Cursor's composer database is the visible chat. Agent transcripts replay
   // some internal Build prompts, so use them only as metadata and a fallback.
   const transcriptsById = new Map(transcripts.map((session) => [session.sessionId, session]));
-  return composers.map((composer) => {
+  const sessions = composers.map((composer) => {
     const transcript = transcriptsById.get(composer.sessionId);
     if (!transcript) return composer;
+    transcriptsById.delete(composer.sessionId);
     return {
       ...composer,
       filePath: transcript.filePath,
@@ -167,6 +164,7 @@ async function findCursorSessions(workspacePath: string): Promise<LocalAgentSess
       messages: composer.messages?.length ? composer.messages : transcript.messages,
     };
   });
+  return sortSessions([...sessions, ...transcriptsById.values()]);
 }
 
 async function findCursorAgentTranscripts(workspacePath: string): Promise<LocalAgentSession[]> {
@@ -182,28 +180,61 @@ async function findCursorAgentTranscripts(workspacePath: string): Promise<LocalA
     const projectCwd = await cursorProjectCwd(projectDir, projectEntry.name, workspacePath);
     if (!projectCwd || !(await sameWorkspacePath(projectCwd, workspacePath))) continue;
     const transcriptsDir = path.join(projectDir, "agent-transcripts");
-    let entries: import("fs").Dirent[];
-    try { entries = await fs.readdir(transcriptsDir, { withFileTypes: true }); }
-    catch { continue; }
-
-    for (const entry of entries) {
-      const candidates: string[] = [];
-      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-        candidates.push(path.join(transcriptsDir, entry.name));
-      } else if (entry.isDirectory()) {
-        const sessionDir = path.join(transcriptsDir, entry.name);
-        for (const name of [`${entry.name}.jsonl`, "transcript.jsonl"]) {
-          const candidate = path.join(sessionDir, name);
-          try { if ((await fs.stat(candidate)).isFile()) candidates.push(candidate); } catch {}
-        }
-      }
-      for (const filePath of candidates.slice(0, 1)) {
-        const session = await cursorTranscriptSession(filePath, projectCwd);
-        if (session) sessions.push(session);
+    const candidatesBySession = new Map<string, string[]>();
+    for (const filePath of await cursorTranscriptFiles(transcriptsDir)) {
+      const sessionId = cursorTranscriptId(filePath, transcriptsDir);
+      if (!sessionId) continue;
+      const candidates = candidatesBySession.get(sessionId) || [];
+      candidates.push(filePath);
+      candidatesBySession.set(sessionId, candidates);
+    }
+    for (const [sessionId, candidates] of candidatesBySession) {
+      candidates.sort((left, right) => cursorTranscriptPreference(left) - cursorTranscriptPreference(right));
+      for (const filePath of candidates) {
+        const session = await cursorTranscriptSession(filePath, projectCwd, sessionId);
+        if (!session) continue;
+        sessions.push(session);
+        break;
       }
     }
   }
   return sortSessions([...new Map(sessions.map((session) => [session.sessionId, session])).values()]);
+}
+
+async function cursorTranscriptFiles(transcriptsDir: string): Promise<string[]> {
+  const files: string[] = [];
+  const visit = async (directory: string, depth: number): Promise<void> => {
+    let entries: import("fs").Dirent[];
+    try { entries = await fs.readdir(directory, { withFileTypes: true }); }
+    catch { return; }
+    for (const entry of entries) {
+      if (entry.name === "subagents") continue;
+      const child = path.join(directory, entry.name);
+      if (entry.isDirectory() && depth < 1) await visit(child, depth + 1);
+      else if (entry.isFile() && /\.(jsonl|txt)$/i.test(entry.name)) files.push(child);
+    }
+  };
+  await visit(transcriptsDir, 0);
+  return files;
+}
+
+function cursorTranscriptId(filePath: string, transcriptsDir: string): string | undefined {
+  const relative = path.relative(transcriptsDir, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+  const segments = relative.split(path.sep);
+  const stem = path.basename(filePath).replace(/\.(jsonl|txt)$/i, "");
+  const encoded = segments.length > 1 && (stem === segments[0] || stem === "transcript")
+    ? segments[0]
+    : stem;
+  try {
+    return decodeURIComponent(encoded.replace(/_/g, "%"));
+  } catch {
+    return encoded;
+  }
+}
+
+function cursorTranscriptPreference(filePath: string): number {
+  return filePath.toLowerCase().endsWith(".jsonl") ? 0 : 1;
 }
 
 async function cursorProjectCwd(projectDir: string, slug: string, workspacePath: string): Promise<string | undefined> {
@@ -219,34 +250,19 @@ async function cursorProjectCwd(projectDir: string, slug: string, workspacePath:
     : undefined;
 }
 
-async function cursorTranscriptSession(filePath: string, cwd: string): Promise<LocalAgentSession | undefined> {
+async function cursorTranscriptSession(filePath: string, cwd: string, sessionId: string): Promise<LocalAgentSession | undefined> {
   try {
     const metadata = await fs.stat(filePath);
-    const records = (await readLines(filePath)).map(parseJson).filter(Boolean);
-    const messages: LocalSessionMessage[] = [];
+    const messages = await readCursorTranscriptMessages(filePath);
     let model: string | undefined;
-    for (const record of records) {
-      const role = cursorTranscriptRole(record);
-      if (!role) continue;
-      const blocks = record?.message?.content
-        ?? record?.content
-        ?? record?.userQuery
-        ?? record?.user_query
-        ?? record?.query
-        ?? record?.prompt;
-      const content = cursorTranscriptText(blocks, role)?.trim();
-      if (content && !isBootstrapContext(content)) {
-        messages.push({
-          role,
-          content,
-          createdAt: cursorDate(record?.timestamp ?? record?.createdAt ?? record?.message?.timestamp ?? record?.message?.createdAt),
-        });
+    if (filePath.toLowerCase().endsWith(".jsonl")) {
+      for (const record of (await readLines(filePath)).map(parseJson).filter(Boolean)) {
+        if (!model && cursorTranscriptRole(record) === "assistant") {
+          model = firstString([record?.model, record?.message?.model]);
+        }
       }
-      if (!model && role === "assistant") model = firstString([record?.model, record?.message?.model]);
     }
     if (!messages.length) return undefined;
-    const stem = path.basename(filePath, ".jsonl");
-    const sessionId = stem === "transcript" ? path.basename(path.dirname(filePath)) : stem;
     const firstUser = messages.find((message) => message.role === "user")?.content;
     return {
       provider: "cursor",
@@ -263,6 +279,34 @@ async function cursorTranscriptSession(filePath: string, cwd: string): Promise<L
   } catch {
     return undefined;
   }
+}
+
+async function readCursorTranscriptMessages(filePath: string): Promise<LocalSessionMessage[]> {
+  if (filePath.toLowerCase().endsWith(".txt")) {
+    return parseCursorTextTranscript(await fs.readFile(filePath, "utf8"));
+  }
+  const messages: LocalSessionMessage[] = [];
+  for (const line of await readLines(filePath)) {
+    const message = cursorTranscriptMessage(parseJson(line));
+    if (!message || isBootstrapContext(message.content)) continue;
+    messages.push(message);
+  }
+  return dedupeCursorTranscriptMessages(messages).slice(-1000);
+}
+
+function parseCursorTextTranscript(content: string): LocalSessionMessage[] {
+  const marker = /(?:^|\r?\n\r?\n)(user|assistant):\r?\n/g;
+  const matches = [...content.matchAll(marker)];
+  const messages: LocalSessionMessage[] = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const start = (match.index || 0) + match[0].length;
+    const end = matches[index + 1]?.index ?? content.length;
+    const text = content.slice(start, end).trim();
+    if (!text || isBootstrapContext(text)) continue;
+    messages.push({ role: match[1] as "user" | "assistant", content: text });
+  }
+  return dedupeCursorTranscriptMessages(messages).slice(-1000);
 }
 
 function cursorTranscriptText(value: unknown, role: "user" | "assistant"): string | undefined {
@@ -319,7 +363,7 @@ async function findCursorComposerSessions(workspacePath: string): Promise<LocalA
 }
 
 type CursorStateSource = { dbPath: string; workspacePath?: string };
-type CursorRow = { key: string; value: string };
+type CursorRow = { key: string; value: unknown };
 type CursorComposer = {
   id: string;
   header?: Record<string, unknown>;
@@ -379,25 +423,19 @@ async function readCursorWorkspaceInfo(filePath: string): Promise<string | undef
 }
 
 async function readCursorRows(dbPath: string): Promise<CursorRow[]> {
-  const tables = await sqliteJson<{ name: string }>(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ItemTable', 'cursorDiskKV')");
+  const tables = await querySqlite<{ name: string }>(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ItemTable', 'cursorDiskKV')");
   const rows: CursorRow[] = [];
   for (const table of tables.map((item) => item.name).filter((name) => name === "ItemTable" || name === "cursorDiskKV")) {
-    rows.push(...await sqliteJson<CursorRow>(dbPath, `SELECT key, value FROM ${table} WHERE key = 'composer.composerHeaders' OR key = 'composer.composerData' OR key LIKE 'composerData:%' OR key LIKE 'bubbleId:%'`));
+    rows.push(...await querySqlite<CursorRow>(dbPath, `SELECT key, value FROM ${table} WHERE key = 'composer.composerHeaders' OR key = 'composer.composerData' OR key LIKE 'composerData:%' OR key LIKE 'bubbleId:%'`));
   }
-  const headerTable = await sqliteJson<{ name: string }>(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'composerHeaders'");
+  const headerTable = await querySqlite<{ name: string }>(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'composerHeaders'");
   if (headerTable.length) {
-    rows.push(...await sqliteJson<CursorRow>(
+    rows.push(...await querySqlite<CursorRow>(
       dbPath,
       "SELECT 'composerHeader:' || composerId AS key, value FROM composerHeaders WHERE COALESCE(isArchived, 0) = 0 AND COALESCE(isSubagent, 0) = 0",
     ));
   }
   return rows;
-}
-
-async function sqliteJson<T>(dbPath: string, sql: string): Promise<T[]> {
-  const { stdout } = await execFileAsync("sqlite3", ["-json", dbPath, sql], { timeout: 8_000, maxBuffer: 32 * 1024 * 1024 });
-  if (!stdout.trim()) return [];
-  return JSON.parse(stdout) as T[];
 }
 
 async function cursorSessionsFromRows(rows: CursorRow[], source: CursorStateSource, workspacePath: string, mtime: number, size: number): Promise<LocalAgentSession[]> {
@@ -627,8 +665,8 @@ function pathFromUriLike(value: string | undefined): string | undefined {
   return value;
 }
 
-function parseCursorDbValue(value: string): unknown {
-  let current: unknown = value;
+function parseCursorDbValue(value: unknown): unknown {
+  let current = value instanceof Uint8Array ? Buffer.from(value).toString("utf8") : value;
   for (let index = 0; index < 2; index++) {
     if (typeof current !== "string") break;
     const trimmed = current.trim();

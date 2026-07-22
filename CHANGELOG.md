@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- Find current Cursor conversations from every supported transcript layout instead of dropping transcript-only conversations when older database entries exist.
+- Keep a valid Cursor transcript when the editor database has metadata but no decoded messages.
+- Read Cursor conversations and editor login data through the editor's built-in SQLite runtime, with the system SQLite command retained as a fallback for older editors.
+
 ## 0.1.7
 
 - Automatically merge non-overlapping text edits made concurrently in the local editor and on chat.dev, then update the open Cursor or VS Code document with the combined file.
