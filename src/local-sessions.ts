@@ -98,9 +98,7 @@ export async function readSessionMessages(session: LocalAgentSession): Promise<L
     const record = parseJson(line);
     const message = session.provider === "codex"
       ? codexMessage(record)
-      : session.provider === "cursor"
-        ? cursorTranscriptMessage(record)
-        : claudeMessage(record);
+      : claudeMessage(record);
     if (!message || !message.content || isBootstrapContext(message.content)) continue;
     const previous = messages[messages.length - 1];
     if (previous && previous.role === message.role && previous.content === message.content) continue;
