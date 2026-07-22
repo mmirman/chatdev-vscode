@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import { createRequire } from "module";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
@@ -49,7 +50,7 @@ function loadNodeSqlite(): NodeSqlite | undefined {
   try {
     // Cursor and current VS Code use a Node runtime with the built-in SQLite API.
     // Keep the command-line fallback for older compatible editor releases.
-    const runtimeRequire = eval("require") as NodeRequire;
+    const runtimeRequire = createRequire(__filename);
     nodeSqlite = runtimeRequire("node:sqlite") as NodeSqlite;
   } catch {
     nodeSqlite = null;
