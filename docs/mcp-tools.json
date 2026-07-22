@@ -27,7 +27,7 @@
         "type": "object",
         "properties": {
           "name": { "type": "string" },
-          "runtime": { "enum": ["codex-tmux", "claude-code-tmux", "cursor-agent-tmux"] },
+          "runtime": { "enum": ["codex-tmux", "claude-code-tmux", "cursor-agent-tmux", "copilot-tmux"] },
           "machineSize": { "type": "string" },
           "volumeGb": { "type": "integer", "minimum": 1 },
           "model": { "type": "string" }
@@ -75,7 +75,7 @@
           "agentId": { "type": "string" },
           "name": { "type": "string" },
           "parentSessionId": { "type": ["string", "null"] },
-          "runtime": { "enum": ["codex-tmux", "openclaw-tmux", "claude-code-tmux", "cursor-agent-tmux", "opencode-tmux", "gemini-code-tmux", "poolside-tmux"] },
+          "runtime": { "enum": ["codex-tmux", "openclaw-tmux", "claude-code-tmux", "cursor-agent-tmux", "copilot-tmux", "opencode-tmux", "gemini-code-tmux", "poolside-tmux"] },
           "model": { "type": ["string", "null"] },
           "start": { "type": "boolean", "default": true }
         },
@@ -92,7 +92,7 @@
           "agentId": { "type": "string" },
           "sessionId": { "type": "string" },
           "name": { "type": "string" },
-          "runtime": { "enum": ["codex-tmux", "openclaw-tmux", "claude-code-tmux", "cursor-agent-tmux", "opencode-tmux", "gemini-code-tmux", "poolside-tmux"] },
+          "runtime": { "enum": ["codex-tmux", "openclaw-tmux", "claude-code-tmux", "cursor-agent-tmux", "copilot-tmux", "opencode-tmux", "gemini-code-tmux", "poolside-tmux"] },
           "model": { "type": ["string", "null"] }
         },
         "required": ["agentId", "sessionId"],
@@ -206,7 +206,7 @@
           "agentId": { "type": "string" },
           "targetSessionId": { "type": "string" },
           "runtime": { "type": "string" },
-          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "provider": { "enum": ["codex", "claude", "cursor", "copilot"] },
           "sourceSessionId": { "type": "string" },
           "localCwd": { "type": "string" },
           "dataBase64": { "type": "string" }
@@ -223,7 +223,7 @@
         "properties": {
           "agentId": { "type": "string" },
           "remoteSessionId": { "type": "string" },
-          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "provider": { "enum": ["codex", "claude", "cursor", "copilot"] },
           "sourceSessionId": { "type": "string" },
           "messages": {
             "type": "array",
@@ -249,7 +249,7 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "provider": { "enum": ["codex", "claude", "cursor", "copilot"] },
           "values": { "type": "object", "additionalProperties": { "type": "string" } }
         },
         "required": ["provider", "values"],
@@ -263,7 +263,7 @@
         "type": "object",
         "properties": {
           "agentId": { "type": "string" },
-          "provider": { "enum": ["codex", "claude", "cursor"] },
+          "provider": { "enum": ["codex", "claude", "cursor", "copilot"] },
           "values": { "type": "object", "additionalProperties": { "type": "string" } }
         },
         "required": ["agentId", "provider", "values"],

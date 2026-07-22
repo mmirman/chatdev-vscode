@@ -51,11 +51,11 @@ See the [full installation guide](docs/INSTALL.md) for updates, uninstalling, an
 
 Open the project used by the local coding agent and click **Continue** in the chat.dev sidebar or its cloud icon in the toolbar.
 
-The New Agent pane opens inside the editor. For Cursor, its session list is scoped to the exact open project and matches active Agent conversations from Cursor's own history store. Choose which session should be the **Default**, then set the agent name, machine, disk, model, budget, and local provider login option. Machine cards show their current chat.dev price before you create anything.
+The New Agent pane opens inside the editor. In VS Code, its session list matches GitHub Copilot Agent conversations from the open project's **Chat History**. In Cursor, it matches active Agent conversations from Cursor's own project history. Choose which session should be the **Default**, then set the agent name, machine, disk, model, budget, and local provider login option. Machine cards show their current chat.dev price before you create anything.
 
 ![Choose the Default conversation, machine, and provider login in the editor](docs/images/continue.png)
 
-Every discovered local session is transferred. Each becomes a named chat.dev session with its own harness, model, terminal, and history on the shared project. When the extension finds local provider credentials, the same form lets you make them available to all chat.dev agents, install them only on this agent, or use the provider connection already on chat.dev.
+Every discovered local session is transferred. Each becomes a named chat.dev session with its own harness, model, terminal, and history on the shared project. A VS Code Copilot Agent conversation is converted to Copilot's native resumable session format and runs in GitHub Copilot CLI on the remote machine. When the extension finds the VS Code GitHub login or other local provider credentials, the same form lets you make them available to all chat.dev agents, install them only on this agent, or use the provider connection already on chat.dev.
 
 After you click **Create New Agent**, the real agent page opens in the browser immediately. It may show **Starting** at first; that same page becomes ready as initialization finishes. The editor pane stays open and shows credential, conversation, startup, file-sync, and session progress. If setup stops, **Try Again** finishes the existing agent. **Start New Agent and Move Connection** creates a fresh destination and moves this project's connection when it is ready.
 
@@ -79,7 +79,7 @@ After **Continue**, the open local project mirrors the agent's workspace:
 - agent changes appear in Explorer and open editors;
 - Cursor's native Agent panel loads the selected chat.dev session, including imported history and later browser messages;
 - prompts entered in that Cursor panel run on the exact chat.dev agent and session shown in the title;
-- **Terminal** lets Cursor users open the real Codex, Claude Code, or Cursor CLI separately;
+- **Terminal** opens the real GitHub Copilot, Codex, Claude Code, or Cursor CLI for that session;
 - each chat.dev session has its own coding harness, model, terminal, and transcript on the shared workspace;
 - a continued Cursor conversation keeps its exact imported history in chat.dev and in Cursor's native Agent panel;
 - later turns from Cursor or chat.dev keep joining the same session;
@@ -92,11 +92,11 @@ After **Continue**, the open local project mirrors the agent's workspace:
 
 Open VS Code's Chat view and use its model picker to choose **chat.dev**. The extension lists the same coding models available through chat.dev, streams responses into the normal Chat interface, and supports editor tools and images. A saved provider key is used when the account has one; otherwise supported models use chat.dev platform credits. You can also type `@chatdev` in Chat; it switches that request to a chat.dev model even when another vendor is selected and can run the editor tools available to that chat.
 
-VS Code saves those conversations in its normal **Chat sessions** list. They stay ordinary VS Code Chat sessions, including forks and history managed by VS Code. **Continue** is for resumable coding-agent sessions created by Codex, Claude Code, or Cursor; it does not relabel a Copilot Chat transcript as a coding-agent session. In Cursor, use **Cursor Agent** for the shared native conversation or **Terminal** for the actual remote CLI. In VS Code, **Agent** opens the remote CLI and lets you choose among the Default, independent sessions, and branches.
+VS Code saves those conversations in its normal **Chat sessions** list. They stay ordinary VS Code Chat sessions, including forks and history managed by VS Code. **Continue** includes GitHub Copilot conversations that used Agent mode in the exact open project; Ask-mode and `@chatdev` participant chats stay local VS Code chats. In Cursor, use **Cursor Agent** for the shared native conversation or **Terminal** for the actual remote CLI. In VS Code, **Agent** opens the remote CLI and lets you choose among the Default, independent sessions, and branches.
 
 ## What Continue does
 
-1. **Click Continue.** The extension finds Codex, Claude Code, and Cursor conversations associated with the exact open project and opens its New Agent pane in the editor.
+1. **Click Continue.** The extension finds GitHub Copilot Agent, Codex, Claude Code, and Cursor conversations associated with the exact open project and opens its New Agent pane in the editor.
 2. **Choose settings and create the agent.** Select the Default session, machine, disk, model, budget, and provider login. As soon as you click **Create new agent**, the extension builds the complete local project listing before it copies any project object.
 3. **Keep working.** Clicking **Create New Agent** first makes Cursor or VS Code finish the complete timestamped project listing; the browser waits for that acknowledgement before it creates the agent. Once the worker starts, `.chatdev-sync-manifest.json` receives every expected file, directory, and symlink before any file body is copied. `.chatdev-sync-status.json` shows transfer progress, and a `filename.chatdev-downloading` sibling means that file is not ready yet. The agent remains usable during copying; later edits mirror both ways as changes after the recorded snapshot.
 
@@ -119,6 +119,7 @@ Provider credentials are optional. When detected, they can be saved for compatib
 
 | Local coding agent | Discovery | Handoff target |
 | --- | --- | --- |
+| GitHub Copilot in VS Code | Agent-mode conversations in the open project's VS Code Chat History, plus standalone `COPILOT_HOME` sessions | A native resumable GitHub Copilot CLI session with the imported title, model, prompts, and responses |
 | Codex | `CODEX_HOME` or `~/.codex` session records | Codex with the original session ID |
 | Claude Code | `CLAUDE_CONFIG_DIR` or `~/.claude` project sessions | Claude Code with the original session ID |
 | Cursor | Active Agent conversations from Cursor's own project-scoped history records, enriched with exact-project `~/.cursor/projects/.../agent-transcripts` logs | The same session in Cursor's native Agent panel and chat.dev. The extension imports the visible history, routes new native-panel prompts to the selected remote session, appends completed browser turns while Cursor is idle, and notices new local sessions created later. The separate **Terminal** action opens the remote harness CLI. |
@@ -126,7 +127,7 @@ Provider credentials are optional. When detected, they can be saved for compatib
 ## Project status
 
 - Extension client: in-editor continuation, same-project workspace mirroring, native Cursor Agent sessions, and session-aware CLI terminals implemented
-- API contract: documented in [CHATDEV_API_SPEC.md](docs/CHATDEV_API_SPEC.md) and implemented on the chat.dev feature branch
+- API contract: documented in [CHATDEV_API_SPEC.md](docs/CHATDEV_API_SPEC.md) and implemented on chat.dev staging
 - chat.dev server support: in pre-production testing
 - VS Code Marketplace listing: not published; install from a release VSIX
 

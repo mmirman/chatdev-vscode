@@ -1,17 +1,18 @@
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
+import * as vscode from "vscode";
 import { querySqlite } from "./sqlite";
 
 export type LocalProviderCredentials = {
-  provider: "codex" | "claude" | "cursor";
+  provider: "codex" | "claude" | "cursor" | "copilot";
   values: Record<string, string>;
   sources: string[];
 };
 
 const MAX_CREDENTIAL_FILE_BYTES = 1024 * 1024;
 
-export async function findLocalProviderCredentials(provider: "codex" | "claude" | "cursor"): Promise<LocalProviderCredentials> {
+export async function findLocalProviderCredentials(provider: "codex" | "claude" | "cursor" | "copilot"): Promise<LocalProviderCredentials> {
   const values: Record<string, string> = {};
   const sources: string[] = [];
 
@@ -40,9 +41,43 @@ export async function findLocalProviderCredentials(provider: "codex" | "claude" 
       sources.push("Cursor login");
     }
     addEnvironmentCredential(values, sources, "CURSOR_API_KEY");
+  } else if (provider === "copilot") {
+    for (const key of ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) {
+      addEnvironmentCredential(values, sources, key, "GitHub Copilot login");
+      if (Object.keys(values).length) break;
+    }
+    if (!Object.keys(values).length) {
+      const session = await findVSCodeGitHubSession();
+      if (session?.accessToken) {
+        values.COPILOT_GITHUB_TOKEN = session.accessToken;
+        sources.push("VS Code GitHub Copilot login");
+      }
+    }
   }
 
   return { provider, values, sources };
+}
+
+async function findVSCodeGitHubSession(): Promise<vscode.AuthenticationSession | undefined> {
+  for (const scopes of [
+    ["read:user", "user:email", "repo", "workflow"],
+    ["user:email"],
+    ["read:user"],
+  ]) {
+    try {
+      const session = await vscode.authentication.getSession("github", scopes, { silent: true });
+      if (session?.accessToken) return session;
+    } catch {}
+  }
+  try {
+    return await vscode.authentication.getSession("github", ["user:email"], {
+      createIfNone: {
+        detail: "chat.dev can use the same GitHub Copilot account when you choose to continue this conversation remotely.",
+      },
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 async function readCursorEditorCredential(): Promise<string | undefined> {
@@ -121,9 +156,9 @@ function cursorAuthPaths(): string[] {
   return [...new Set(paths.filter((item): item is string => !!item))];
 }
 
-function addEnvironmentCredential(values: Record<string, string>, sources: string[], key: string): void {
+function addEnvironmentCredential(values: Record<string, string>, sources: string[], key: string, label = key): void {
   const value = process.env[key];
   if (!value) return;
-  values[key] = value;
-  sources.push(key);
+  values[key === "GH_TOKEN" || key === "GITHUB_TOKEN" ? "COPILOT_GITHUB_TOKEN" : key] = value;
+  sources.push(label);
 }

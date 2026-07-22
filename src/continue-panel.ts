@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 export type ContinuePanelConversation = {
   id: string;
   title: string;
-  provider: "codex" | "claude" | "cursor";
+  provider: "codex" | "claude" | "cursor" | "copilot";
   model?: string;
   mtime: number;
   credentialSources: string[];
@@ -261,7 +261,13 @@ function renderPanel(cspSource: string, options: PanelOptions): string {
     function updateConversation() {
       const item = selectedConversation();
       if (!item) return;
-      const provider = item.provider === 'claude' ? 'Claude Code' : item.provider === 'cursor' ? 'Cursor Agent' : 'Codex';
+      const provider = item.provider === 'claude'
+        ? 'Claude Code'
+        : item.provider === 'cursor'
+          ? 'Cursor Agent'
+          : item.provider === 'copilot'
+            ? 'GitHub Copilot'
+            : 'Codex';
       document.getElementById('conversation-meta').textContent = provider + ' · ' + item.remoteLabel + ' · ' + new Date(item.mtime).toLocaleString();
       model.value = item.model || '';
       credentialSection.hidden = allCredentialSources.length === 0;

@@ -18,10 +18,12 @@ import { registerChatDevParticipant } from "./chat-participant";
 import { disposeSessionTranscriptSyncs, restoreSessionTranscriptSync, restoreWorkspaceSessionDiscoveries } from "./session-sync";
 import { disposeWorkspaceMirrors, restoreWorkspaceMirrors } from "./workspace-mirror";
 import { ensureCursorBridgeReady, registerCursorAgentPanel } from "./cursor-agent-panel";
+import { configureLocalSessionStorage } from "./local-sessions";
 
 let deletedWorkspaceRecovery: Promise<boolean> | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  configureLocalSessionStorage(context.globalStorageUri.fsPath);
   const api = new ChatDevApi(context);
   const fileSystem = new ChatDevFileSystem(api);
   const languageModels = new ChatDevLanguageModelProvider(api);

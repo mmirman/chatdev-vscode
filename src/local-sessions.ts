@@ -2,14 +2,18 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { createHash } from "crypto";
+import { gzipSync } from "zlib";
 import { dedupeCursorTranscriptMessages } from "./cursor-sync-identity";
 import { querySqlite } from "./sqlite";
 
 export type LocalAgentSession = {
-  provider: "codex" | "claude" | "cursor";
-  runtime: "codex-tmux" | "claude-code-tmux" | "cursor-agent-tmux";
+  provider: "codex" | "claude" | "cursor" | "copilot";
+  runtime: "codex-tmux" | "claude-code-tmux" | "cursor-agent-tmux" | "copilot-tmux";
   sessionId: string;
   filePath?: string;
+  sessionDirectory?: string;
+  sessionFormat?: "copilot-cli" | "vscode-chat";
   stateDbPath?: string;
   cwd: string;
   model?: string;
@@ -29,17 +33,29 @@ export type LocalSessionMessage = {
 };
 
 const SESSION_SCAN_BYTES = 2 * 1024 * 1024;
+let extensionGlobalStoragePath: string | undefined;
+
+export function configureLocalSessionStorage(globalStoragePath: string): void {
+  extensionGlobalStoragePath = globalStoragePath;
+}
 
 export async function findLocalAgentSessions(workspace: vscode.Uri): Promise<LocalAgentSession[]> {
   if (workspace.scheme !== "file") return [];
   const workspacePath = await canonicalPath(workspace.fsPath);
-  const [cursor, codex, claude] = await Promise.all([
+  const [cursor, vscodeChat, copilot, codex, claude] = await Promise.all([
     findCursorSessions(workspacePath),
+    findVSCodeChatSessions(workspacePath),
+    findCopilotSessions(workspacePath),
     findCodexSessions(workspacePath),
     findClaudeSessions(workspacePath),
   ]);
   if (isCursorHost() && cursor.length) return sortSessions(cursor);
-  return sortSessions([...cursor, ...codex, ...claude]);
+  if (!isCursorHost() && (vscodeChat.length || copilot.length)) {
+    const sessions = new Map(copilot.map((session) => [session.sessionId, session]));
+    for (const session of vscodeChat) sessions.set(session.sessionId, session);
+    return sortSessions([...sessions.values()]);
+  }
+  return sortSessions([...cursor, ...copilot, ...codex, ...claude]);
 }
 
 function sortSessions(sessions: LocalAgentSession[]): LocalAgentSession[] {
@@ -51,6 +67,12 @@ function isCursorHost(): boolean {
 }
 
 export async function readSession(session: LocalAgentSession): Promise<Uint8Array> {
+  if (session.provider === "copilot" && session.sessionFormat === "vscode-chat") {
+    return readVSCodeChatSessionBundle(session);
+  }
+  if (session.provider === "copilot" && session.sessionDirectory) {
+    return readCopilotSessionBundle(session);
+  }
   if (session.provider === "cursor") {
     return renderCursorSessionTranscript(session, await readSessionMessages(session));
   }
@@ -89,6 +111,13 @@ export async function readSessionMessages(session: LocalAgentSession): Promise<L
       // Cursor can rotate or lock its state database briefly while saving.
     }
   }
+  if (session.provider === "copilot" && session.sessionFormat === "vscode-chat" && session.filePath) {
+    try {
+      return vscodeChatMessages(await readVSCodeChatData(session.filePath), session.sessionId).slice(-1000);
+    } catch {
+      // VS Code may be appending a mutation while this polling pass reads it.
+    }
+  }
   if (session.messages?.length) return session.messages.slice(-1000);
   if (!session.filePath) return [];
   if (session.provider === "cursor") return readCursorTranscriptMessages(session.filePath);
@@ -98,13 +127,477 @@ export async function readSessionMessages(session: LocalAgentSession): Promise<L
     const record = parseJson(line);
     const message = session.provider === "codex"
       ? codexMessage(record)
-      : claudeMessage(record);
+      : session.provider === "copilot"
+        ? copilotMessage(record)
+        : claudeMessage(record);
     if (!message || !message.content || isBootstrapContext(message.content)) continue;
     const previous = messages[messages.length - 1];
     if (previous && previous.role === message.role && previous.content === message.content) continue;
     messages.push(message);
   }
   return messages.slice(-1000);
+}
+
+async function findCopilotSessions(workspacePath: string): Promise<LocalAgentSession[]> {
+  const roots = [
+    process.env.COPILOT_HOME && path.join(process.env.COPILOT_HOME, "session-state"),
+    process.env.XDG_STATE_HOME && path.join(process.env.XDG_STATE_HOME, ".copilot", "session-state"),
+    path.join(os.homedir(), ".copilot", "session-state"),
+  ].filter((value): value is string => !!value);
+  const sessions: LocalAgentSession[] = [];
+  for (const root of [...new Set(roots)]) {
+    let entries: import("fs").Dirent[];
+    try { entries = await fs.readdir(root, { withFileTypes: true }); }
+    catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const sessionDirectory = path.join(root, entry.name);
+      const filePath = path.join(sessionDirectory, "events.jsonl");
+      try {
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile()) continue;
+        const lines = await readLines(filePath);
+        const records = lines.map(parseJson).filter(Boolean);
+        const start = records.find((record) => record?.type === "session.start");
+        const workspace = await readCopilotWorkspace(path.join(sessionDirectory, "workspace.yaml"));
+        const cwd = firstString([workspace.cwd, start?.data?.context?.cwd]);
+        if (!cwd || !(await relatedPath(cwd, workspacePath))) continue;
+        const modelChanges = records.filter((record) => record?.type === "session.model_change");
+        const model = firstString([
+          modelChanges[modelChanges.length - 1]?.data?.newModel,
+          lastCopilotAssistantModel(records),
+        ]);
+        const sessionId = firstString([workspace.id, start?.data?.sessionId, entry.name])!;
+        sessions.push({
+          provider: "copilot",
+          runtime: "copilot-tmux",
+          sessionId,
+          filePath,
+          sessionDirectory,
+          sessionFormat: "copilot-cli",
+          cwd,
+          model,
+          title: workspace.name || firstCopilotUserText(records) || `Copilot ${sessionId.slice(0, 8)}`,
+          mtime: stat.mtimeMs,
+          size: stat.size,
+        });
+      } catch {}
+    }
+  }
+  return [...new Map(sessions.map((session) => [session.sessionId, session])).values()];
+}
+
+async function findVSCodeChatSessions(workspacePath: string): Promise<LocalAgentSession[]> {
+  if (isCursorHost()) return [];
+  const sessions: LocalAgentSession[] = [];
+  for (const userDirectory of await vscodeUserDirectories()) {
+    const storageRoot = path.join(userDirectory, "workspaceStorage");
+    let workspaces: import("fs").Dirent[];
+    try { workspaces = await fs.readdir(storageRoot, { withFileTypes: true }); }
+    catch { continue; }
+    for (const entry of workspaces) {
+      if (!entry.isDirectory()) continue;
+      const workspaceDirectory = path.join(storageRoot, entry.name);
+      if (!(await vscodeStorageMatchesWorkspace(workspaceDirectory, workspacePath))) continue;
+      const chatDirectory = path.join(workspaceDirectory, "chatSessions");
+      let files: import("fs").Dirent[];
+      try { files = await fs.readdir(chatDirectory, { withFileTypes: true }); }
+      catch { continue; }
+      const preferred = new Map<string, string>();
+      for (const file of files) {
+        if (!file.isFile() || !/\.jsonl?$/i.test(file.name)) continue;
+        const stem = file.name.replace(/\.jsonl?$/i, "");
+        const candidate = path.join(chatDirectory, file.name);
+        if (file.name.toLowerCase().endsWith(".jsonl") || !preferred.has(stem)) preferred.set(stem, candidate);
+      }
+      for (const filePath of preferred.values()) {
+        try {
+          const [stat, data] = await Promise.all([fs.stat(filePath), readVSCodeChatData(filePath)]);
+          if (!vscodeChatIsAgentSession(data)) continue;
+          const sourceSessionId = firstString([data.sessionId, path.basename(filePath).replace(/\.jsonl?$/i, "")]);
+          if (!sourceSessionId) continue;
+          const sessionId = copilotSessionId(sourceSessionId);
+          const messages = vscodeChatMessages(data, sessionId);
+          if (!messages.length) continue;
+          const firstUser = messages.find((message) => message.role === "user")?.content;
+          sessions.push({
+            provider: "copilot",
+            runtime: "copilot-tmux",
+            sessionId,
+            filePath,
+            sessionFormat: "vscode-chat",
+            cwd: workspacePath,
+            model: vscodeChatModel(data),
+            title: firstString([data.customTitle, data.computedTitle])?.replace(/\s+/g, " ").slice(0, 90)
+              || firstUser?.replace(/\s+/g, " ").slice(0, 90)
+              || `GitHub Copilot ${sessionId.slice(0, 8)}`,
+            mtime: stat.mtimeMs,
+            size: stat.size,
+            messages,
+          });
+        } catch {}
+      }
+    }
+  }
+  return [...new Map(sessions.map((session) => [session.sessionId, session])).values()];
+}
+
+async function vscodeUserDirectories(): Promise<string[]> {
+  const product = vscode.env.appName.toLowerCase();
+  const preferredProduct = product.includes("insider")
+    ? "Code - Insiders"
+    : product.includes("vscodium")
+      ? "VSCodium"
+      : product.includes("oss")
+        ? "Code - OSS"
+        : "Code";
+  const products = [...new Set([preferredProduct, "Code", "Code - Insiders", "VSCodium", "Code - OSS"])];
+  const commandLineUserData = commandLineValue("--user-data-dir");
+  const explicit = [process.env.VSCODE_USER_DATA_DIR, commandLineUserData]
+    .filter((value): value is string => !!value)
+    .map((value) => path.basename(value).toLowerCase() === "user" ? value : path.join(value, "User"));
+  const platform = process.platform === "darwin"
+    ? products.map((name) => path.join(os.homedir(), "Library", "Application Support", name, "User"))
+    : process.platform === "win32"
+      ? products.map((name) => process.env.APPDATA ? path.join(process.env.APPDATA, name, "User") : "").filter(Boolean)
+      : products.map((name) => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), name, "User"));
+  const portable = process.env.VSCODE_PORTABLE ? [path.join(process.env.VSCODE_PORTABLE, "user-data", "User")] : [];
+  const extensionStorageAncestors: string[] = [];
+  if (extensionGlobalStoragePath) {
+    let current = path.resolve(extensionGlobalStoragePath);
+    for (let index = 0; index < 6; index += 1) {
+      current = path.dirname(current);
+      extensionStorageAncestors.push(current);
+    }
+  }
+  const linuxPackages = process.platform === "linux" ? [
+    path.join(os.homedir(), "snap", "code", "current", ".config", "Code", "User"),
+    path.join(os.homedir(), ".var", "app", "com.visualstudio.code", "config", "Code", "User"),
+  ] : [];
+  const existing: string[] = [];
+  for (const candidate of [...new Set([...extensionStorageAncestors, ...explicit, ...portable, ...platform, ...linuxPackages])]) {
+    try {
+      if ((await fs.stat(path.join(candidate, "workspaceStorage"))).isDirectory()) existing.push(candidate);
+    } catch {}
+  }
+  return existing;
+}
+
+function commandLineValue(name: string): string | undefined {
+  for (let index = 0; index < process.argv.length; index += 1) {
+    const argument = process.argv[index];
+    if (argument === name) return process.argv[index + 1];
+    if (argument.startsWith(`${name}=`)) return argument.slice(name.length + 1);
+  }
+  return undefined;
+}
+
+async function vscodeStorageMatchesWorkspace(workspaceDirectory: string, workspacePath: string): Promise<boolean> {
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(await fs.readFile(path.join(workspaceDirectory, "workspace.json"), "utf8")); }
+  catch { return false; }
+  const folder = pathFromUriLike(firstString([data.folder]));
+  if (folder && await sameWorkspacePath(folder, workspacePath)) return true;
+  const storedWorkspace = pathFromUriLike(firstString([data.workspace, data.configuration]));
+  const openWorkspace = vscode.workspace.workspaceFile?.scheme === "file" ? vscode.workspace.workspaceFile.fsPath : undefined;
+  if (storedWorkspace && openWorkspace && await sameWorkspacePath(storedWorkspace, openWorkspace)) return true;
+  if (!storedWorkspace) return false;
+  try {
+    const definition = JSON.parse(await fs.readFile(storedWorkspace, "utf8")) as { folders?: Array<{ path?: string; uri?: string }> };
+    for (const item of definition.folders || []) {
+      const configured = item.uri ? pathFromUriLike(item.uri) : item.path ? path.resolve(path.dirname(storedWorkspace), item.path) : undefined;
+      if (configured && await sameWorkspacePath(configured, workspacePath)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+async function readVSCodeChatData(filePath: string): Promise<Record<string, any>> {
+  const content = await fs.readFile(filePath, "utf8");
+  if (!filePath.toLowerCase().endsWith(".jsonl")) {
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid VS Code chat session");
+    return parsed;
+  }
+  let state: any;
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const entry = parseJson(line);
+    if (!entry || typeof entry.kind !== "number") continue;
+    if (entry.kind === 0) {
+      state = entry.v;
+    } else if (state !== undefined && entry.kind === 1) {
+      state = applyVSCodeSet(state, entry.k, entry.v, false);
+    } else if (state !== undefined && entry.kind === 2) {
+      state = applyVSCodePush(state, entry.k, entry.v, entry.i);
+    } else if (state !== undefined && entry.kind === 3) {
+      state = applyVSCodeSet(state, entry.k, undefined, true);
+    }
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("Invalid VS Code chat mutation log");
+  return state;
+}
+
+function applyVSCodeSet(state: any, keyPath: unknown, value: unknown, remove: boolean): any {
+  if (!Array.isArray(keyPath)) return state;
+  if (!keyPath.length) return value;
+  let parent = state;
+  for (const segment of keyPath.slice(0, -1)) {
+    if (!parent || typeof parent !== "object") return state;
+    parent = parent[segment as any];
+  }
+  if (!parent || typeof parent !== "object") return state;
+  const key = keyPath[keyPath.length - 1] as any;
+  if (remove) delete parent[key];
+  else parent[key] = value;
+  return state;
+}
+
+function applyVSCodePush(state: any, keyPath: unknown, values: unknown, startIndex: unknown): any {
+  if (!Array.isArray(keyPath)) return state;
+  if (!keyPath.length) {
+    const current = Array.isArray(state) ? state : [];
+    if (Number.isInteger(startIndex) && Number(startIndex) >= 0) current.length = Number(startIndex);
+    if (Array.isArray(values)) current.push(...values);
+    return current;
+  }
+  let parent = state;
+  for (const segment of keyPath.slice(0, -1)) {
+    if (!parent || typeof parent !== "object") return state;
+    parent = parent[segment as any];
+  }
+  if (!parent || typeof parent !== "object") return state;
+  const key = keyPath[keyPath.length - 1] as any;
+  const current = Array.isArray(parent[key]) ? parent[key] : [];
+  if (Number.isInteger(startIndex) && Number(startIndex) >= 0) current.length = Number(startIndex);
+  if (Array.isArray(values)) current.push(...values);
+  parent[key] = current;
+  return state;
+}
+
+function vscodeChatIsAgentSession(data: Record<string, any>): boolean {
+  const inputMode = String(data.inputState?.mode?.kind || data.inputState?.mode?.id || "").toLowerCase();
+  const requests = Array.isArray(data.requests) ? data.requests : [];
+  const requestUsesCopilotAgent = requests.some((request: any) => String(request?.agent?.id || "").toLowerCase().startsWith("github.copilot"));
+  const requestIsAgentMode = requests.some((request: any) => {
+    const mode = String(request?.modeInfo?.kind || request?.modeInfo?.telemetryModeId || "").toLowerCase();
+    return mode === "agent";
+  });
+  const selectedModel = data.inputState?.selectedModel;
+  const modelUsesCopilot = [selectedModel?.identifier, selectedModel?.metadata?.vendor, selectedModel?.metadata?.provider]
+    .some((value) => /^(?:github\.)?copilot(?:[/:]|$)/i.test(String(value || "")));
+  const responderUsesCopilot = /copilot/i.test(String(data.responderUsername || ""));
+  return (inputMode === "agent" || requestIsAgentMode || requestUsesCopilotAgent)
+    && (requestUsesCopilotAgent || modelUsesCopilot || responderUsesCopilot);
+}
+
+function vscodeChatMessages(data: Record<string, any>, sessionId: string): LocalSessionMessage[] {
+  if (!Array.isArray(data.requests)) return [];
+  const messages: LocalSessionMessage[] = [];
+  for (let index = 0; index < data.requests.length; index += 1) {
+    const request = data.requests[index];
+    if (!request || typeof request !== "object") continue;
+    const requestId = firstString([request.requestId]) || `${index}`;
+    const turnId = `vscode:${sessionId}:${requestId}`;
+    const userText = typeof request.message === "string" ? request.message.trim() : String(request.message?.text || "").trim();
+    if (!request.isSystemInitiated && userText && !isBootstrapContext(userText)) {
+      const sourceId = `${turnId}:user`;
+      messages.push({
+        role: "user",
+        content: userText,
+        createdAt: vscodeChatDate(request.timestamp),
+        sourceId,
+        turnId,
+        originKey: sourceId,
+      });
+    }
+    const assistantText = vscodeChatResponseText(request.response);
+    if (!assistantText) continue;
+    const sourceId = `${turnId}:assistant`;
+    const assistant: LocalSessionMessage = {
+      role: "assistant",
+      content: assistantText,
+      createdAt: vscodeChatDate(request.responseTimestamp),
+      sourceId,
+      turnId,
+      originKey: sourceId,
+    };
+    if (request.isSystemInitiated && messages[messages.length - 1]?.role === "assistant") {
+      const previous = messages[messages.length - 1];
+      messages[messages.length - 1] = { ...previous, content: `${previous.content}\n\n${assistantText}` };
+    } else {
+      messages.push(assistant);
+    }
+  }
+  return messages;
+}
+
+function vscodeChatResponseText(response: unknown): string {
+  if (!Array.isArray(response)) return "";
+  const parts: string[] = [];
+  for (const value of response) {
+    if (typeof value === "string") {
+      if (value.trim()) parts.push(value.trim());
+      continue;
+    }
+    const part = objectValue(value);
+    if (!part) continue;
+    const kind = String(part.kind || "");
+    if (kind === "thinking" || kind === "toolInvocation" || kind === "toolInvocationSerialized") continue;
+    let text: string | undefined;
+    if (!kind && typeof part.value === "string") text = part.value;
+    else if (kind === "markdownContent") text = textContent(part.content);
+    else if (kind === "inlineReference") text = firstString([part.name]);
+    else if (!kind || kind === "markdown") text = textContent(part);
+    if (text?.trim()) parts.push(text.trim());
+  }
+  return parts.join("\n").trim();
+}
+
+function vscodeChatDate(value: unknown): string | null {
+  const timestamp = cursorTimestampValue(value);
+  return timestamp === undefined ? null : new Date(timestamp).toISOString();
+}
+
+function vscodeChatModel(data: Record<string, any>): string | undefined {
+  const requests = Array.isArray(data.requests) ? data.requests : [];
+  const latestRequestModel = [...requests].reverse().map((request) => firstString([request?.modelId])).find(Boolean);
+  return normalizeCopilotModel(firstString([
+    data.inputState?.selectedModel?.metadata?.id,
+    data.inputState?.selectedModel?.identifier,
+    latestRequestModel,
+  ]));
+}
+
+function normalizeCopilotModel(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return value.replace(/^(?:github\.)?copilot[/:]/i, "").trim() || undefined;
+}
+
+function copilotSessionId(value: string): string {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : stableUuid("vscode-session", value);
+}
+
+function stableUuid(...parts: string[]): string {
+  const bytes = createHash("sha256").update(parts.join("\u0000")).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function readVSCodeChatSessionBundle(session: LocalAgentSession): Promise<Uint8Array> {
+  const messages = session.filePath
+    ? vscodeChatMessages(await readVSCodeChatData(session.filePath), session.sessionId)
+    : session.messages || [];
+  let clock = Math.max(0, Math.min(...messages.map((message) => Date.parse(message.createdAt || "")).filter(Number.isFinite), Date.now()));
+  let parentId: string | null = null;
+  const events: any[] = [];
+  const push = (id: string, type: string, data: Record<string, unknown>, requestedTime?: string | null) => {
+    const parsed = requestedTime ? Date.parse(requestedTime) : NaN;
+    clock = Math.max(clock + 1, Number.isFinite(parsed) ? parsed : clock + 1);
+    events.push({ id, parentId, timestamp: new Date(clock).toISOString(), type, data });
+    parentId = id;
+  };
+  const startId = stableUuid(session.sessionId, "session.start");
+  push(startId, "session.start", {
+    sessionId: session.sessionId,
+    copilotVersion: "0.0.0",
+    producer: "chatdev-vscode-migration",
+    startTime: new Date(clock).toISOString(),
+    version: 1,
+    ...(session.model ? { selectedModel: session.model } : {}),
+    context: { cwd: session.cwd },
+  }, messages[0]?.createdAt);
+  for (const message of messages) {
+    const identity = message.sourceId || `${message.turnId || "turn"}:${message.role}:${message.content}`;
+    const eventId = stableUuid(session.sessionId, identity);
+    if (message.role === "user") {
+      push(eventId, "user.message", {
+        content: message.content,
+        source: "user",
+      }, message.createdAt);
+    } else {
+      push(eventId, "assistant.message", {
+        content: message.content,
+        messageId: stableUuid(session.sessionId, identity, "message"),
+        ...(session.model ? { model: session.model } : {}),
+      }, message.createdAt);
+    }
+  }
+  const eventLog = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+  const files = [{ path: "events.jsonl", mode: 0o600, dataBase64: Buffer.from(eventLog).toString("base64") }];
+  return gzipSync(Buffer.from(JSON.stringify({ version: 1, sessionId: session.sessionId, files })), { level: 6 });
+}
+
+async function readCopilotWorkspace(filePath: string): Promise<{ id?: string; cwd?: string; name?: string }> {
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    const result: { id?: string; cwd?: string; name?: string } = {};
+    for (const line of content.split(/\r?\n/)) {
+      const match = line.match(/^(id|cwd|name):\s*(.*)$/);
+      if (!match) continue;
+      const value = parseYamlScalar(match[2]);
+      if (match[1] === "id") result.id = value;
+      else if (match[1] === "cwd") result.cwd = value;
+      else result.name = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function parseYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try { return String(JSON.parse(trimmed)); } catch {}
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1).replace(/''/g, "'");
+  return trimmed;
+}
+
+function firstCopilotUserText(records: any[]): string | undefined {
+  const message = records.find((record) => record?.type === "user.message");
+  const content = typeof message?.data?.content === "string" ? message.data.content.trim() : "";
+  return content ? content.replace(/\s+/g, " ").slice(0, 90) : undefined;
+}
+
+function lastCopilotAssistantModel(records: any[]): string | undefined {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record?.type === "assistant.message" && typeof record?.data?.model === "string") return record.data.model;
+  }
+  return undefined;
+}
+
+async function readCopilotSessionBundle(session: LocalAgentSession): Promise<Uint8Array> {
+  const root = session.sessionDirectory!;
+  const files: Array<{ path: string; mode: number; dataBase64: string }> = [];
+  let rawBytes = 0;
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const stat = await fs.stat(absolute);
+      rawBytes += stat.size;
+      if (rawBytes > 100 * 1024 * 1024) throw new Error(`Copilot session ${session.title} is larger than the 100 MB transfer limit.`);
+      const relative = path.relative(root, absolute).split(path.sep).join(path.posix.sep);
+      files.push({ path: relative, mode: stat.mode & 0o777, dataBase64: (await fs.readFile(absolute)).toString("base64") });
+    }
+  };
+  await visit(root);
+  if (!files.some((file) => file.path === "events.jsonl")) throw new Error(`Copilot session ${session.title} has no event log.`);
+  const payload = Buffer.from(JSON.stringify({ version: 1, sessionId: session.sessionId, files }));
+  return gzipSync(payload, { level: 6 });
 }
 
 async function findCodexSessions(workspacePath: string): Promise<LocalAgentSession[]> {
@@ -813,6 +1306,24 @@ function claudeMessage(record: any): LocalSessionMessage | undefined {
   return messageFrom(role, record?.message?.content ?? record?.content, record);
 }
 
+function copilotMessage(record: any): LocalSessionMessage | undefined {
+  const role = record?.type === "user.message"
+    ? "user"
+    : record?.type === "assistant.message"
+      ? "assistant"
+      : undefined;
+  const content = typeof record?.data?.content === "string" ? record.data.content.trim() : "";
+  if (!role || !content) return undefined;
+  return {
+    role,
+    content,
+    createdAt: typeof record?.timestamp === "string" ? record.timestamp : null,
+    sourceId: typeof record?.id === "string" ? `copilot:${record.id}` : undefined,
+    turnId: firstString([record?.data?.interactionId, record?.data?.turnId]),
+    originKey: typeof record?.id === "string" ? `copilot:${record.id}` : undefined,
+  };
+}
+
 function cursorTranscriptMessage(record: any): LocalSessionMessage | undefined {
   const role = cursorTranscriptRole(record);
   if (!role) return undefined;
@@ -863,7 +1374,7 @@ function textContent(value: unknown): string | undefined {
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    for (const key of ["text", "content", "input_text", "output_text"]) {
+    for (const key of ["text", "content", "value", "input_text", "output_text"]) {
       const field = record[key];
       if (typeof field === "string" && field.trim()) return field;
       if (Array.isArray(field)) {

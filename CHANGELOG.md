@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+
+- Discover the GitHub Copilot Agent conversations shown in the open VS Code project's Chat History instead of looking only for standalone Copilot CLI sessions.
+- Convert a selected VS Code Copilot conversation into Copilot's native resumable event log, preserving its title, model, ordered user prompts, and assistant responses on chat.dev.
+- Carry the VS Code GitHub Copilot login to the destination when the user selects an account-wide or agent-only provider login.
+- Run the same persistent GitHub Copilot CLI session from the chat.dev terminal and Simplify conversation, with unsupported VS Code model names falling back to the Copilot account default.
+
 ## 0.1.8
 
 - Find current Cursor conversations from every supported transcript layout instead of dropping transcript-only conversations when older database entries exist.

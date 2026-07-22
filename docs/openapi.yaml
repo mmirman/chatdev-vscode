@@ -827,7 +827,7 @@ components:
           enum: [starting, running, errored, stopped, deleted]
         statusSummary: { type: [string, "null"] }
         agentRuntime:
-          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
+          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, copilot-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
         model: { type: [string, "null"] }
         machineSize: { type: string }
     AgentSession:
@@ -872,7 +872,7 @@ components:
         name: { type: string, minLength: 1, maxLength: 100 }
         parentSessionId: { type: [string, "null"] }
         runtime:
-          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
+          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, copilot-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
         model: { type: [string, "null"] }
         sourceProvider: { type: [string, "null"] }
         sourceSessionId: { type: [string, "null"] }
@@ -899,7 +899,7 @@ components:
       properties:
         name: { type: string }
         agentRuntime:
-          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
+          enum: [codex-tmux, openclaw-tmux, claude-code-tmux, cursor-agent-tmux, copilot-tmux, opencode-tmux, gemini-code-tmux, poolside-tmux]
         machineSize: { type: string }
         volumeGb: { type: integer, minimum: 1 }
         model: { type: string }
@@ -912,8 +912,8 @@ components:
       properties:
         id: { type: string }
         title: { type: string }
-        provider: { enum: [codex, claude, cursor] }
-        runtime: { enum: [codex-tmux, claude-code-tmux, cursor-agent-tmux] }
+        provider: { enum: [codex, claude, cursor, copilot] }
+        runtime: { enum: [codex-tmux, claude-code-tmux, cursor-agent-tmux, copilot-tmux] }
         model: { type: string }
         mtime: { type: number }
         credentialSources:
@@ -975,7 +975,7 @@ components:
       required: [provider, values]
       properties:
         provider:
-          enum: [codex, claude, cursor]
+          enum: [codex, claude, cursor, copilot]
         values:
           type: object
           additionalProperties: { type: string }
@@ -1056,7 +1056,7 @@ components:
       type: object
       required: [provider, sessionId, messages]
       properties:
-        provider: { enum: [codex, claude, cursor] }
+        provider: { enum: [codex, claude, cursor, copilot] }
         sessionId: { type: string }
         messages:
           type: array

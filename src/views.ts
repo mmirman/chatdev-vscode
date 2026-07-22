@@ -184,6 +184,7 @@ export class AgentItem extends vscode.TreeItem {
 function runtimeLabel(runtime?: string | null): string {
   if (runtime === "claude-code-tmux") return "Claude Code";
   if (runtime === "cursor-agent-tmux") return "Cursor Agent";
+  if (runtime === "copilot-tmux") return "GitHub Copilot";
   if (runtime === "codex-tmux") return "Codex";
   return runtime || "coding agent";
 }

@@ -2,7 +2,7 @@
 
 ## Continue the current project on chat.dev
 
-Open the exact project used by your local Codex, Claude Code, or Cursor conversation.
+Open the exact project used by your local GitHub Copilot Agent, Codex, Claude Code, or Cursor conversation.
 
 1. Click the chat.dev `>_` icon on the left side of VS Code or Cursor.
 2. Click **Continue**, or click the cloud icon in the chat.dev toolbar.
@@ -15,13 +15,15 @@ Open the exact project used by your local Codex, Claude Code, or Cursor conversa
 
 ![Choose the Default local AI conversation, machine, and provider login in the editor](images/continue.png)
 
-Each local history entry becomes a separate chat.dev session on the same machine and workspace. Codex sessions continue with Codex and Claude Code sessions continue with Claude Code. A Cursor session uses a persistent remote Cursor Agent when the extension finds a Cursor login or API key. Without one, it uses Codex with chat.dev credits. Both receive the visible Cursor history as prior context.
+Each local history entry becomes a separate chat.dev session on the same machine and workspace. A GitHub Copilot Agent conversation from VS Code Chat History becomes a native resumable Copilot CLI session with the same ordered prompts and responses. Codex sessions continue with Codex and Claude Code sessions continue with Claude Code. A Cursor session uses a persistent remote Cursor Agent when the extension finds a Cursor login or API key. Without one, it uses Codex with chat.dev credits. Both receive the visible Cursor history as prior context.
+
+When VS Code already has a GitHub account for Copilot, it asks once whether this extension may use that login. The **Local provider logins** choice then controls whether the login is made available to every chat.dev agent, installed only on this agent, or not uploaded.
 
 The local transcript watcher stays attached to each selected Cursor conversation. New local turns continue to reach the exact chat.dev session while the project remains open, and a new active Cursor Agent conversation created in that project becomes another chat.dev session automatically. The extension connects Cursor's native Agent panel automatically on first startup and keeps Cursor's true composer records current instead of showing a second chat-shaped extension view.
 
 After transfer, the Cursor sidebar shows **Cursor Agent**, **Terminal**, and **Shell** without reopening the project. Click **Cursor Agent**, choose a session, and continue in Cursor's normal Agent panel. Browser Simplify and the native Cursor panel update the same chat.dev session. **Terminal** opens that session's coding CLI, while **Shell** opens an ordinary shell on the machine.
 
-In VS Code, the sidebar shows **Agent** and **Shell**. **Agent** opens the coding CLI because VS Code does not include Cursor's Agent panel.
+In VS Code, the sidebar shows **Agent** and **Shell**. **Agent** opens the persistent coding CLI. For a continued Copilot conversation, that is the same GitHub Copilot session imported from VS Code Chat History and used by Simplify.
 
 If setup stops after creation, the form stays open and shows the actual failure. Click **Try Again** to finish connecting that agent. Click **Start New Agent and Move Connection** when you want a different agent instead; the old agent stays on your account until you delete it yourself. If the old agent was already deleted, Continue forgets that stale connection and creates a new one.
 
@@ -50,7 +52,7 @@ Choosing the account-wide option both installs the credential on the new machine
 
 The provider supports streamed answers, images, editor tool calls, and cancellation. Saved provider keys are used when available. Supported models otherwise use the chat.dev account's platform credits.
 
-Typing `@chatdev` also routes the request through a chat.dev model when another vendor is selected. The participant carries attached references and its chat history forward and can run the editor tools available to that chat. These conversations appear in VS Code's ordinary Chat sessions list and keep VS Code's normal save, fork, archive, and export behavior. They are separate from Codex, Claude Code, and Cursor coding-agent sessions discovered by **Continue**. Cursor does not load third-party VS Code language-model providers into its model picker, so the extension connects the native Cursor Agent panel directly to a chat.dev session instead.
+Typing `@chatdev` also routes the request through a chat.dev model when another vendor is selected. The participant carries attached references and its chat history forward and can run the editor tools available to that chat. These conversations appear in VS Code's ordinary Chat sessions list and keep VS Code's normal save, fork, archive, and export behavior. **Continue** discovers GitHub Copilot chats that used Agent mode; Ask-mode and `@chatdev` participant chats remain ordinary local chats. Cursor does not load third-party VS Code language-model providers into its model picker, so the extension connects the native Cursor Agent panel directly to a chat.dev session instead.
 
 ## Use the native Cursor Agent panel
 
@@ -138,7 +140,7 @@ After the manifest is complete, the first sync sends each object independently, 
 
 ### No conversation appears
 
-Confirm the open project is the directory used by the local Codex, Claude Code, or Cursor conversation. Cursor conversations come from the active Agent entries in Cursor's own history store and their exact-project transcript logs. Open the exact project folder in Cursor and use **Show Chat History** once if no conversation appears. Empty draft chats are omitted.
+Confirm the open project is the directory used by the local GitHub Copilot Agent, Codex, Claude Code, or Cursor conversation. In VS Code, open **Chat History** and confirm that the conversation used Agent mode in this project; Ask-mode and empty draft chats are omitted. Cursor conversations come from active Agent entries in Cursor's own history store and their exact-project transcript logs. Open the exact project folder in Cursor and use **Show Chat History** once if no conversation appears.
 
 ### The agent picker did not return to the editor
 

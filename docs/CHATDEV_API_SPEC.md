@@ -314,6 +314,7 @@ Remote handoff behavior:
 
 | Local conversation | Remote behavior |
 | --- | --- |
+| VS Code GitHub Copilot Agent conversation | Create `copilot-tmux`, install a native Copilot event log, and resume the same conversation in GitHub Copilot CLI |
 | `codex-tmux` | Resume the imported Codex session ID |
 | `claude-code-tmux` | Resume the imported Claude Code session ID |
 | Cursor editor conversation with Cursor credentials | Create `cursor-agent-tmux`, import the visible editor history, and continue it in a durable remote Cursor CLI session |
@@ -349,6 +350,7 @@ Provider values used by the extension:
 | `codex` | `CODEX_AUTH_JSON`, `OPENAI_API_KEY` |
 | `claude` | `CLAUDE_CREDENTIALS_JSON`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` |
 | `cursor` | `CURSOR_AUTH_JSON`, `CURSOR_API_KEY` |
+| `copilot` | `COPILOT_GITHUB_TOKEN` |
 
 When the user chooses **This agent only**, the extension sends the same provider/value body to `POST /api/credentials/agents/:agentId/import-provider` before starting the stopped agent. This stores the values on that destination so its first harness process can use them. For an already-running agent, the compatible `credential_import` Socket.IO event installs updated values and restarts the affected runtime when needed.
 
@@ -759,6 +761,30 @@ Downloads in either direction use the deterministic `.chatdev-downloading` sibli
 2. `session_import_chunk` sends the conversation record in ordered base64 chunks.
 3. `session_import_commit` installs the record, changes the recorded working directory to the remote workspace, and resumes the original session ID.
 
+### GitHub Copilot conversations from VS Code
+
+VS Code stores the conversations shown in **Chat History** under its workspace storage. Current releases use an append-only JSONL mutation log; older supported releases use one JSON document per session. The extension reconstructs those records, keeps only GitHub Copilot conversations that used Agent mode in the exact open project, and extracts the title, selected model, ordered user prompts, and visible assistant responses.
+
+The extension converts each conversation into the same native `events.jsonl` format used by VS Code's own **Continue in Copilot CLI** action. Event IDs are deterministic UUIDs and form one parent-linked, timestamp-ordered chain. It sends a gzip-compressed versioned bundle through the existing session import events:
+
+```json
+{
+  "agentId": "agent-id",
+  "targetSessionId": "chatdev-session-id",
+  "runtime": "copilot-tmux",
+  "provider": "copilot",
+  "sourceSessionId": "vscode-chat-session-uuid",
+  "localCwd": "/local/project",
+  "size": 2048,
+  "sha256": "sha256-of-compressed-bundle",
+  "referenceOnly": false
+}
+```
+
+The worker verifies the compressed size, decoded size, session ID, path uniqueness, relative paths, checksum, and required `events.jsonl`, then installs the bundle atomically under `$COPILOT_HOME/session-state/<sourceSessionId>`. The session terminal runs `copilot --resume <sourceSessionId>` and Simplify submits prompts into that same persistent TUI. Its event-log watcher appends new Copilot user and assistant events to the existing session-scoped conversation log. If a VS Code model name is unavailable in Copilot CLI, startup retries once with the Copilot account default.
+
+The VS Code GitHub session is imported as `COPILOT_GITHUB_TOKEN` only when the user selects the account-wide or destination-only provider-login option. The `copilot` credential provider accepts no other value names.
+
 ### Cursor conversations
 
 Current Cursor releases export project-linked Agent conversations under `~/.cursor/projects/<project>/agent-transcripts`. The extension reads those JSONL transcripts and correlates their IDs with Cursor's project metadata. Older `state.vscdb` composer records remain a compatibility fallback when no Agent transcript exists.
@@ -843,6 +869,7 @@ The extension then starts the agent. The login is present when the first harness
 - [x] Restart recovery and manifest reconciliation on both sides
 - [x] Codex session import and resume
 - [x] Claude Code session import and resume
+- [x] VS Code GitHub Copilot Agent discovery, native event-log conversion, credential import, and Copilot CLI resume
 - [x] Cursor editor chat transcript import
 - [x] Current Cursor transcript discovery and ongoing transcript refresh
 - [x] Persistent structured Cursor Agent session shared by Simplify and the remote terminal, with editor transcripts imported into the same chat.dev session and supplied as prior context

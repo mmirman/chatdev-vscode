@@ -23,8 +23,8 @@ export type AgentUpdateResult = Agent & {
 export type EditorConversation = {
   id: string;
   title: string;
-  provider: "codex" | "claude" | "cursor";
-  runtime: "codex-tmux" | "claude-code-tmux" | "cursor-agent-tmux";
+  provider: "codex" | "claude" | "cursor" | "copilot";
+  runtime: "codex-tmux" | "claude-code-tmux" | "cursor-agent-tmux" | "copilot-tmux";
   model?: string;
   mtime: number;
   credentialSources?: string[];
@@ -83,7 +83,7 @@ export type AgentThread = {
   forkedFromMessageId: number | null;
   forkThroughRuntimeTurnId: string | null;
   branchKind: "default" | "main" | "new" | "branch" | "edit" | "import";
-  sourceProvider?: "codex" | "claude" | "cursor" | null;
+  sourceProvider?: "codex" | "claude" | "cursor" | "copilot" | null;
   sourceSessionId?: string | null;
 };
 
@@ -304,7 +304,7 @@ export class ChatDevApi {
     name: string;
     runtime: string;
     model?: string;
-    sourceProvider: "codex" | "claude" | "cursor";
+    sourceProvider: "codex" | "claude" | "cursor" | "copilot";
     sourceSessionId: string;
     start?: boolean;
   }): Promise<AgentThread> {
@@ -319,7 +319,7 @@ export class ChatDevApi {
     name?: string;
     runtime?: string;
     model?: string | null;
-    sourceProvider?: "codex" | "claude" | "cursor";
+    sourceProvider?: "codex" | "claude" | "cursor" | "copilot";
     sourceSessionId?: string;
   }): Promise<AgentThread> {
     const result = await this.requestSessionApi<{ session?: AgentThread; thread?: AgentThread }>(
@@ -371,7 +371,7 @@ export class ChatDevApi {
   async importChatMessages(input: {
     agentId: string;
     threadId: string;
-    provider: "codex" | "claude" | "cursor";
+    provider: "codex" | "claude" | "cursor" | "copilot";
     sessionId: string;
     messages: ImportedChatMessage[];
   }): Promise<number> {
@@ -515,7 +515,7 @@ export class ChatDevApi {
     await this.request(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
-  async saveGlobalProviderCredentials(provider: "codex" | "claude" | "cursor", values: Record<string, string>): Promise<string[]> {
+  async saveGlobalProviderCredentials(provider: "codex" | "claude" | "cursor" | "copilot", values: Record<string, string>): Promise<string[]> {
     const result = await this.request<{ keys: string[] }>("/api/credentials/import-provider", {
       method: "POST",
       body: JSON.stringify({ provider, values }),
@@ -523,7 +523,7 @@ export class ChatDevApi {
     return result.keys;
   }
 
-  async importAgentCredentials(agentId: string, provider: "codex" | "claude" | "cursor", values: Record<string, string>): Promise<string[]> {
+  async importAgentCredentials(agentId: string, provider: "codex" | "claude" | "cursor" | "copilot", values: Record<string, string>): Promise<string[]> {
     const socket = await this.connectSocket();
     try {
       const result = await socketAck<{ ok: boolean; keys?: string[]; error?: string }>(socket, "credential_import", { agentId, provider, values });
@@ -534,7 +534,7 @@ export class ChatDevApi {
     }
   }
 
-  async storeAgentCredentials(agentId: string, provider: "codex" | "claude" | "cursor", values: Record<string, string>): Promise<string[]> {
+  async storeAgentCredentials(agentId: string, provider: "codex" | "claude" | "cursor" | "copilot", values: Record<string, string>): Promise<string[]> {
     const result = await this.request<{ keys: string[] }>(`/api/credentials/agents/${encodeURIComponent(agentId)}/import-provider`, {
       method: "POST",
       body: JSON.stringify({ provider, values }),
@@ -570,7 +570,7 @@ export class ChatDevApi {
     agentId: string;
     threadId: string;
     runtime: string;
-    provider: "codex" | "claude" | "cursor";
+    provider: "codex" | "claude" | "cursor" | "copilot";
     sessionId: string;
     localCwd: string;
     data: Uint8Array;

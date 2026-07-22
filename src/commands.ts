@@ -43,7 +43,7 @@ export async function continueCurrentProjectInEditor(api: ChatDevApi): Promise<v
   if (!folder) return;
   if (!(await vscode.workspace.saveAll(false))) throw new Error("Save the open project files before continuing on chat.dev.");
   const sessions = await discoverLocalSessions(folder.uri);
-  if (!sessions.length) throw new Error("No resumable Codex, Claude Code, or Cursor conversation was found for this project.");
+  if (!sessions.length) throw new Error("No resumable GitHub Copilot, Codex, Claude Code, or Cursor conversation was found for this project.");
 
   const credentialsByProvider = await findCredentialsForSessions(sessions);
   const conversations = await Promise.all(sessions.map(async (session) => {
@@ -114,7 +114,7 @@ export async function continueCurrentProjectInBrowser(api: ChatDevApi): Promise<
   if (!folder) return;
   if (!(await vscode.workspace.saveAll(false))) throw new Error("Save the open project files before continuing on chat.dev.");
   const sessions = await discoverLocalSessions(folder.uri);
-  if (!sessions.length) throw new Error("No resumable Codex, Claude Code, or Cursor conversation was found for this project.");
+  if (!sessions.length) throw new Error("No resumable GitHub Copilot, Codex, Claude Code, or Cursor conversation was found for this project.");
 
   const credentialsByProvider = await findCredentialsForSessions(sessions);
   const conversations: EditorConversation[] = [];
@@ -955,6 +955,7 @@ function remoteDestinationLabel(session: LocalAgentSession, credentials: LocalPr
   const runtime = remoteRuntimeForSession(session, credentials);
   if (runtime === "cursor-agent-tmux") return "continues with Cursor Agent";
   if (runtime === "claude-code-tmux") return "continues with Claude Code";
+  if (runtime === "copilot-tmux") return "continues with GitHub Copilot";
   if (session.provider === "cursor") return "continues with Codex using chat.dev";
   return "continues with Codex";
 }

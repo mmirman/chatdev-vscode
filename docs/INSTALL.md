@@ -50,6 +50,8 @@ Click **Sign in to chat.dev** in the chat.dev panel. The extension opens chat.de
 
 Signing in also makes chat.dev models available in VS Code's built-in Chat model picker. You can sign in from the chat.dev panel or choose chat.dev from Chat's **Manage Models** interface.
 
+When you later click **Continue** for a GitHub Copilot Agent conversation, VS Code may ask once whether chat.dev Remote Agents may use your GitHub login. This only makes that login available to the continuation form. The form still lets you choose whether it is installed on all chat.dev agents, installed only on the new agent, or not uploaded.
+
 ## 5. Let Cursor connect its Agent panel
 
 This step appears only in Cursor.
