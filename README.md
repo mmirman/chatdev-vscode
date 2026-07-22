@@ -119,7 +119,7 @@ Provider credentials are optional. When detected, they can be saved for compatib
 
 | Local coding agent | Discovery | Handoff target |
 | --- | --- | --- |
-| GitHub Copilot in VS Code | Agent-mode conversations in the open project's VS Code Chat History, plus standalone `COPILOT_HOME` sessions | A native resumable GitHub Copilot CLI session with the imported title, model, prompts, and responses |
+| GitHub Copilot in VS Code | Agent-mode conversations in the open project's VS Code Chat History; standalone `COPILOT_HOME` sessions are used only when that project has no saved VS Code Agent conversation | A native resumable GitHub Copilot CLI session with the imported title, model, prompts, and responses |
 | Codex | `CODEX_HOME` or `~/.codex` session records | Codex with the original session ID |
 | Claude Code | `CLAUDE_CONFIG_DIR` or `~/.claude` project sessions | Claude Code with the original session ID |
 | Cursor | Active Agent conversations from Cursor's own project-scoped history records, enriched with exact-project `~/.cursor/projects/.../agent-transcripts` logs | The same session in Cursor's native Agent panel and chat.dev. The extension imports the visible history, routes new native-panel prompts to the selected remote session, appends completed browser turns while Cursor is idle, and notices new local sessions created later. The separate **Terminal** action opens the remote harness CLI. |

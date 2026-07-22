@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.10
+
+- Keep the VS Code continuation picker identical to the open project's native GitHub Copilot Agent history instead of mixing in separate Copilot CLI sessions from the same directory.
+- Use standalone Copilot CLI sessions only as a fallback when that project has no saved VS Code Copilot Agent conversation.
+
 ## 0.1.9
 
 - Discover the GitHub Copilot Agent conversations shown in the open VS Code project's Chat History instead of looking only for standalone Copilot CLI sessions.

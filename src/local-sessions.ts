@@ -50,11 +50,8 @@ export async function findLocalAgentSessions(workspace: vscode.Uri): Promise<Loc
     findClaudeSessions(workspacePath),
   ]);
   if (isCursorHost() && cursor.length) return sortSessions(cursor);
-  if (!isCursorHost() && (vscodeChat.length || copilot.length)) {
-    const sessions = new Map(copilot.map((session) => [session.sessionId, session]));
-    for (const session of vscodeChat) sessions.set(session.sessionId, session);
-    return sortSessions([...sessions.values()]);
-  }
+  if (!isCursorHost() && vscodeChat.length) return sortSessions(vscodeChat);
+  if (!isCursorHost() && copilot.length) return sortSessions(copilot);
   return sortSessions([...cursor, ...copilot, ...codex, ...claude]);
 }
 

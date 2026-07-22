@@ -2,7 +2,7 @@
   "name": "chatdev-remote",
   "displayName": "chat.dev Remote Agents",
   "description": "Continue local GitHub Copilot, Codex, Claude Code, and Cursor conversations on a live chat.dev workspace from VS Code or Cursor.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "chatdev",
   "license": "MIT",
   "repository": {
